@@ -8,3 +8,6 @@ use objc::*;
 
 #[cfg(target_os = "macos")]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+#[cfg(target_os = "ios")]
+use objc2::*;

@@ -548,3 +548,6 @@ pub mod video_toolbox {
         ) -> OSStatus;
     }
 }
+
+#[cfg(target_os = "ios")]
+pub mod core_media {}

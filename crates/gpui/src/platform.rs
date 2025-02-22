@@ -26,6 +26,9 @@ mod test;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "ios")]
+mod ios;
+
 use crate::{
     point, Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
     DevicePixels, DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor,
@@ -65,6 +68,10 @@ pub use keystroke::*;
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::*;
+
+#[cfg(target_os = "ios")]
+pub(crate) use ios::*;
+
 pub use semantic_version::SemanticVersion;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
@@ -78,6 +85,12 @@ pub use test::TestScreenCaptureSource;
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
     Rc::new(MacPlatform::new(headless))
 }
+
+#[cfg(target_os = "ios")]
+pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
+    Rc::new(IosPlatform::new(headless))
+}
+
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
