@@ -241,10 +241,11 @@ impl SsoAccessTokenProvider {
             {
                 Ok(token_result) => {
                     // Create our token structure
-                    let expires_in = token_result.expires_in() as u64;
+                    let expires_in = token_result.expires_in();
                     let token = SsoToken {
                         access_token: token_result.access_token().unwrap().to_string(),
-                        expires_at: Instant::now() + Duration::from_secs(expires_in),
+                        expires_at: OffsetDateTime::now_utc()
+                            + Duration::seconds(expires_in as i64),
                         refresh_token: token_result.refresh_token().map(|s| s.to_string()),
                         identity: Some(self.token_cache_key()),
                     };
@@ -255,7 +256,8 @@ impl SsoAccessTokenProvider {
                     let error_str = e.to_string();
                     if error_str.contains("slow_down") {
                         // If we're told to slow down, wait a bit longer
-                        tokio::time::sleep(Duration::from_secs(interval as u64 * 2)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(interval as u64 * 2))
+                            .await;
                     } else if error_str.contains("authorization_pending") {
                         // This is expected while waiting for user to authenticate
                         continue;
