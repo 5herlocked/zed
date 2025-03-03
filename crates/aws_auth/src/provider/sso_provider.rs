@@ -196,4 +196,78 @@ impl SsoAccessTokenProvider {
             flow: "device_code".to_string(),
         })
     }
+
+    async fn authorize(
+        &self,
+        registration: &ClientRegistration,
+        client: SsoOidcClient,
+    ) -> Result<SsoToken, AuthError> {
+        // Start device authorization
+        let device_auth = client
+            .start_device_authorization()
+            .client_id(&registration.client_id)
+            .client_secret(&registration.client_secret)
+            .start_url(&self.start_url)
+            .send()
+            .await
+            .map_err(|e| AuthError::AwsSdkError(e.to_string()))?;
+
+        let verification_uri = device_auth.verification_uri_complete().unwrap();
+
+        // TOOD: Figure out how to get GPUI to report this
+        println!("Please open: {}", verification_uri);
+        println!("User code: {}", device_auth.user_code().unwrap());
+
+        // TODO: Implement proper browser opening for authentication
+
+        // Poll for token completion
+        let device_code = device_auth.device_code().unwrap().to_string();
+        let interval = device_auth.interval();
+        let expiry_time =
+            OffsetDateTime::now_utc() + Duration::seconds(device_auth.expires_in() as i64);
+
+        // Poll until we get a token or timeout
+        while OffsetDateTime::now_utc() < expiry_time {
+            tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
+
+            match client
+                .create_token()
+                .client_id(&registration.client_id)
+                .client_secret(&registration.client_secret)
+                .grant_type("urn:ietf:params:oauth:grant-type:device_code")
+                .device_code(&device_code)
+                .send()
+                .await
+            {
+                Ok(token_result) => {
+                    // Create our token structure
+                    let expires_in = token_result.expires_in() as u64;
+                    let token = SsoToken {
+                        access_token: token_result.access_token().unwrap().to_string(),
+                        expires_at: Instant::now() + Duration::from_secs(expires_in),
+                        refresh_token: token_result.refresh_token().map(|s| s.to_string()),
+                        identity: Some(self.token_cache_key()),
+                    };
+
+                    return Ok(token);
+                }
+                Err(e) => {
+                    let error_str = e.to_string();
+                    if error_str.contains("slow_down") {
+                        // If we're told to slow down, wait a bit longer
+                        tokio::time::sleep(Duration::from_secs(interval as u64 * 2)).await;
+                    } else if error_str.contains("authorization_pending") {
+                        // This is expected while waiting for user to authenticate
+                        continue;
+                    } else {
+                        // Any other error is a failure
+                        return Err(AuthError::AwsSdkError(error_str));
+                    }
+                }
+            }
+        }
+
+        // If we've reached this point, we timed out
+        Err(AuthError::Timeout)
+    }
 }

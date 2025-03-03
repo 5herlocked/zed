@@ -1,20 +1,23 @@
-mod providers;
+mod provider;
 
+use std::cell::OnceCell;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Error, Result};
+use aws_config::Region;
 use aws_credential_types::provider::future::ProvideCredentials as FutureProvider;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use aws_credential_types::Token;
 use aws_http_client::AwsHttpClient;
 pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
+use aws_sdk_ssooidc::Config;
 use gpui::http_client::HttpClient;
 use gpui::{App, AppContext, Global, ReadGlobal};
 use thiserror::Error;
 
-pub fn init(cx: &mut App, handle: tokio::runtime::Handle) {
-    cx.set_global(GlobalAwsAuthProvider::new(handle));
+pub fn init(cx: &mut App, handle: tokio::runtime::Handle, http_client: Arc<dyn HttpClient>) {
+    cx.set_global(GlobalAwsAuthProvider::new(handle, http_client));
 }
 
 /// Types of AWS connection authentication methods
@@ -45,16 +48,23 @@ pub enum ConnectionState {
 
 struct GlobalAwsAuthProvider {
     handle: tokio::runtime::Handle,
-    sso_oidc_client: SsoOidcClient,
+    sso_oidc_client: OnceCell<SsoOidcClient>,
 }
 
 impl GlobalAwsAuthProvider {
     fn new(handle: tokio::runtime::Handle, http_client: Arc<dyn HttpClient>) -> Self {
-        // TODO: Create an AWS SSO OIDC Client here
-
         let coerced_client = AwsHttpClient::new(http_client.clone(), handle.clone());
 
-        Self { handle }
+        let ssooidc_client = SsoOidcClient::from_conf(
+            Config::builder()
+                .http_client(coerced_client.clone())
+                .build(),
+        );
+
+        Self {
+            handle,
+            sso_oidc_client: OnceCell::from(ssooidc_client),
+        }
     }
 }
 
