@@ -1,6 +1,7 @@
+use std::cell::OnceCell;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::ui::InstructionListItem;
 use anyhow::{anyhow, Context as _, Result};
@@ -169,6 +170,7 @@ pub struct BedrockLanguageModelProvider {
     http_client: AwsHttpClient,
     handler: tokio::runtime::Handle,
     state: gpui::Entity<State>,
+    bedrock_client: OnceLock<bedrock_client::Client>,
 }
 
 impl BedrockLanguageModelProvider {
@@ -182,13 +184,54 @@ impl BedrockLanguageModelProvider {
         });
 
         let tokio_handle = Tokio::handle(cx);
-
         let coerced_client = AwsHttpClient::new(http_client.clone(), tokio_handle.clone());
 
         Self {
             http_client: coerced_client,
-            handler: tokio_handle.clone(),
+            handler: tokio_handle,
             state,
+            bedrock_client: OnceLock::new(),
+        }
+    }
+
+    async fn get_or_init_client(&self, cx: &AsyncApp) -> Result<&bedrock_client::Client> {
+        // First check if we already have a client
+        if let Some(client) = self.bedrock_client.get() {
+            return Ok(client);
+        }
+
+        // Read credentials from state
+        let (access_key_id, secret_access_key, region) =
+            cx.read_entity(&self.state, |state, _cx| {
+                if let Some(credentials) = &state.credentials {
+                    Ok((
+                        credentials.access_key_id.clone(),
+                        credentials.secret_access_key.clone(),
+                        credentials.region.clone(),
+                    ))
+                } else {
+                    Err(anyhow!("Not authenticated"))
+                }
+            })??;
+
+        // Create client configuration
+        let config = Config::builder()
+            .stalled_stream_protection(StalledStreamProtectionConfig::disabled())
+            .credentials_provider(Credentials::new(
+                access_key_id,
+                secret_access_key,
+                None,
+                None,
+                "Keychain",
+            ))
+            .region(Region::new(region))
+            .http_client(self.http_client.clone())
+            .build();
+
+        // Initialize client in the OnceLock
+        let client = bedrock_client::Client::from_conf(config);
+        match self.bedrock_client.get_or_init(|| client) {
+            client => Ok(client),
         }
     }
 }
@@ -215,6 +258,7 @@ impl LanguageModelProvider for BedrockLanguageModelProvider {
             handler: self.handler.clone(),
             state: self.state.clone(),
             request_limiter: RateLimiter::new(4),
+            bedrock_client: OnceLock::new(),
         }))
     }
 
@@ -255,6 +299,7 @@ impl LanguageModelProvider for BedrockLanguageModelProvider {
                     handler: self.handler.clone(),
                     state: self.state.clone(),
                     request_limiter: RateLimiter::new(4),
+                    bedrock_client: OnceLock::new(),
                 }) as Arc<dyn LanguageModel>
             })
             .collect()
