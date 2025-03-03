@@ -1621,6 +1621,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws_auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-ssooidc",
+ "aws_http_client",
+ "futures 0.3.31",
+ "gpui",
+ "paths",
+ "release_channel",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "aws_http_client"
 version = "0.1.0"
 dependencies = [

@@ -15,6 +15,7 @@ members = [
     "crates/audio",
     "crates/auto_update",
     "crates/auto_update_ui",
+    "crates/aws_auth",
     "crates/aws_http_client",
     "crates/bedrock",
     "crates/breadcrumbs",
@@ -220,6 +221,7 @@ assistant_tools = { path = "crates/assistant_tools" }
 audio = { path = "crates/audio" }
 auto_update = { path = "crates/auto_update" }
 auto_update_ui = { path = "crates/auto_update_ui" }
+aws_auth = { path = "crates/aws_auth" }
 aws_http_client = { path = "crates/aws_http_client" }
 bedrock = { path = "crates/bedrock" }
 breadcrumbs = { path = "crates/breadcrumbs" }
@@ -386,9 +388,10 @@ async-trait = "0.1"
 async-tungstenite = "0.28"
 async-watch = "0.3.1"
 async_zip = { version = "0.0.17", features = ["deflate", "deflate64"] }
-aws-config = { version = "1.5.16", features = ["behavior-version-latest"] }
+aws-config = { version = "1.5.16", features = ["behavior-version-latest", "credentials-process"] }
 aws-credential-types = { version = "1.2.1", features = ["hardcoded-credentials"] }
 aws-sdk-bedrockruntime = { version = "1.73.0", features = ["behavior-version-latest"] }
+aws-sdk-ssooidc = { version = "1.61.0", features = ["behavior-version-latest"]}
 aws-smithy-runtime-api = { version = "1.7.3", features = ["http-1x", "client"] }
 aws-smithy-types = { version = "1.2.13", features = ["http-body-1-x"] }
 base64 = "0.22"
