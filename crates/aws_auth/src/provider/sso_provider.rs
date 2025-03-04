@@ -102,6 +102,7 @@ pub struct SsoAccessTokenProvider {
     region: String,
     scopes: Vec<String>,
     token_store: Arc<Mutex<TokenStore>>,
+    ssooidc_client: SsoOidcClient,
 }
 
 impl SsoAccessTokenProvider {
@@ -111,6 +112,7 @@ impl SsoAccessTokenProvider {
         region: String,
         scopes: Vec<String>,
         token_store: Arc<Mutex<TokenStore>>,
+        ssooidc_client: SsoOidcClient,
     ) -> Self {
         Self {
             identifier,
@@ -118,6 +120,7 @@ impl SsoAccessTokenProvider {
             region,
             scopes,
             token_store,
+            ssooidc_client,
         }
     }
 
@@ -165,15 +168,52 @@ impl SsoAccessTokenProvider {
         None
     }
 
+    /// Create a new token through device authorization flow
+    pub async fn create_token(&self, is_re_auth: bool) -> Result<SsoToken, AuthError> {
+        // Get a registration (either cached or create a new one)
+        let registration = self.get_validated_registration().await?;
+
+        // Create a token using the registration
+        let token = self.authorize(&registration).await?;
+
+        // Store the token
+        let mut token_store = self.token_store.lock().unwrap();
+        token_store.store_token(&self.token_cache_key(), token.clone());
+
+        Ok(token)
+    }
+
+    /// Get a client registration or create a new one
+    async fn get_validated_registration(&self) -> Result<ClientRegistration, AuthError> {
+        let cache_key = self.registration_cache_key();
+
+        // Check if we already have a valid registration
+        {
+            let token_store = self.token_store.lock().unwrap();
+            if let Some(registration) = token_store.get_registration(&cache_key) {
+                if !registration.is_expired() {
+                    return Ok(registration);
+                }
+            }
+        }
+
+        // Create a new registration
+        let registration = self.register_client().await?;
+
+        // Store the registration
+        let mut token_store = self.token_store.lock().unwrap();
+        token_store.store_registration(&cache_key, registration.clone());
+
+        Ok(registration)
+    }
+
     /// Register a client with AWS SSO OIDC
-    async fn register_client(
-        &self,
-        client: SsoOidcClient,
-    ) -> Result<ClientRegistration, AuthError> {
-        let client_name = format!("Zed IDE");
+    async fn register_client(&self) -> Result<ClientRegistration, AuthError> {
+        let client_name = "Zed IDE".to_string();
         let client_type = "public";
 
-        let response = client
+        let response = self
+            .ssooidc_client
             .register_client()
             .client_name(client_name)
             .client_type(client_type)
@@ -182,28 +222,28 @@ impl SsoAccessTokenProvider {
             .await
             .map_err(|e| AuthError::AwsSdkError(e.to_string()))?;
 
+        let expires_at =
+            OffsetDateTime::from_unix_timestamp(response.client_secret_expires_at() as i64)
+                .map_err(|_| AuthError::InvalidConnection("Invalid expiration time".to_string()))?;
+
         Ok(ClientRegistration {
             client_id: response
                 .client_id()
-                .expect("Invalid response from AWS SDK")
+                .ok_or_else(|| AuthError::AwsSdkError("Missing client_id".to_string()))?
                 .to_string(),
             client_secret: response
                 .client_secret()
-                .expect("Invalid response from AWS SDK")
+                .ok_or_else(|| AuthError::AwsSdkError("Missing client_secret".to_string()))?
                 .to_string(),
-            expires_at: OffsetDateTime::from_unix_timestamp(response.client_secret_expires_at)
-                .unwrap(),
+            expires_at,
             flow: "device_code".to_string(),
         })
     }
 
-    async fn authorize(
-        &self,
-        registration: &ClientRegistration,
-        client: SsoOidcClient,
-    ) -> Result<SsoToken, AuthError> {
+    async fn authorize(&self, registration: &ClientRegistration) -> Result<SsoToken, AuthError> {
         // Start device authorization
-        let device_auth = client
+        let device_auth = self
+            .ssooidc_client
             .start_device_authorization()
             .client_id(&registration.client_id)
             .client_secret(&registration.client_secret)
@@ -230,7 +270,8 @@ impl SsoAccessTokenProvider {
         while OffsetDateTime::now_utc() < expiry_time {
             tokio::time::sleep(std::time::Duration::from_secs(interval as u64)).await;
 
-            match client
+            match self
+                .ssooidc_client
                 .create_token()
                 .client_id(&registration.client_id)
                 .client_secret(&registration.client_secret)
@@ -271,5 +312,52 @@ impl SsoAccessTokenProvider {
 
         // If we've reached this point, we timed out
         Err(AuthError::Timeout)
+    }
+
+    /// Try to refresh an existing token
+    pub async fn refresh_token(&self, token: &SsoToken) -> Result<SsoToken, AuthError> {
+        if let Some(refresh_token) = &token.refresh_token {
+            // Get registration
+            let registration = self.get_validated_registration().await?;
+
+            // Try to refresh
+            let response = self
+                .ssooidc_client
+                .create_token()
+                .client_id(&registration.client_id)
+                .client_secret(&registration.client_secret)
+                .grant_type("refresh_token")
+                .refresh_token(refresh_token)
+                .send()
+                .await
+                .map_err(|e| AuthError::AwsSdkError(e.to_string()))?;
+
+            // Create refreshed token
+            let expires_in = response.expires_in() as i64;
+            let refreshed_token = SsoToken {
+                access_token: response
+                    .access_token()
+                    .ok_or_else(|| {
+                        AuthError::AwsSdkError("Missing access token in refresh".to_string())
+                    })?
+                    .to_string(),
+                expires_at: OffsetDateTime::now_utc() + Duration::seconds(expires_in),
+                refresh_token: response
+                    .refresh_token()
+                    .map(|s| s.to_string())
+                    .or_else(|| token.refresh_token.clone()),
+                identity: token.identity.clone(),
+            };
+
+            // Store the refreshed token
+            let mut token_store = self.token_store.lock().unwrap();
+            token_store.store_token(&self.token_cache_key(), refreshed_token.clone());
+
+            Ok(refreshed_token)
+        } else {
+            Err(AuthError::AuthenticationFailed(
+                "No refresh token available".to_string(),
+            ))
+        }
     }
 }

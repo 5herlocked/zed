@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Error, Result};
 use aws_config::Region;
 use aws_credential_types::provider::future::ProvideCredentials as FutureProvider;
+use aws_credential_types::provider::future::ProvideToken;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use aws_credential_types::Token;
@@ -48,7 +49,7 @@ pub enum ConnectionState {
 
 struct GlobalAwsAuthProvider {
     handle: tokio::runtime::Handle,
-    sso_oidc_client: OnceCell<SsoOidcClient>,
+    ssooidc_client: OnceCell<SsoOidcClient>,
 }
 
 impl GlobalAwsAuthProvider {
@@ -63,7 +64,7 @@ impl GlobalAwsAuthProvider {
 
         Self {
             handle,
-            sso_oidc_client: OnceCell::from(ssooidc_client),
+            ssooidc_client: OnceCell::from(ssooidc_client),
         }
     }
 }
