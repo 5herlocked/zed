@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Error, Result};
-use aws_config::Region;
+use aws_config::{sso::SsoCredentialsProvider, Region};
 use aws_credential_types::provider::future::ProvideToken as TokenProviderFuture;
 use aws_credential_types::Token;
 use gpui::{App, AppContext, Context as GpuiContext, Global, ReadGlobal, Task};
@@ -10,7 +10,7 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::OnceCell;
 
-use crate::{AuthError, SsoOidcClient, TokenStore};
+use crate::{AuthError, CredentialCache, SsoClient, SsoOidcClient, TokenStore};
 
 /// Token representing an SSO access token
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -318,3 +318,14 @@ impl SsoAccessTokenProvider {
         }
     }
 }
+
+pub struct SsoCredentialProvider {
+    profile_name: String,
+    start_url: String,
+    region: String,
+    role_arn: String,
+    credential_store: Arc<Mutex<CredentialCache>>,
+    ssooidc_client: SsoClient,
+}
+
+impl SsoCredentialProvider {}

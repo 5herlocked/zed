@@ -1,4 +1,3 @@
-mod credential_cache;
 mod provider;
 
 use std::cell::OnceCell;
@@ -11,6 +10,7 @@ use aws_credential_types::provider::future::ProvideCredentials as FutureProvider
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use aws_http_client::AwsHttpClient;
+pub(crate) use aws_sdk_sso::Client as SsoClient;
 pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
 use aws_sdk_ssooidc::Config;
 use gpui::http_client::HttpClient;
