@@ -6,10 +6,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Error, Result};
 use aws_config::Region;
 use aws_credential_types::provider::future::ProvideCredentials as FutureProvider;
-use aws_credential_types::provider::future::ProvideToken;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
-use aws_credential_types::Token;
 use aws_http_client::AwsHttpClient;
 pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
 use aws_sdk_ssooidc::Config;
@@ -49,23 +47,33 @@ pub enum ConnectionState {
 
 struct GlobalAwsAuthProvider {
     handle: tokio::runtime::Handle,
+    region: Option<Region>,
+    http_client:  Arc<dyn HttpClient>,
     ssooidc_client: OnceCell<SsoOidcClient>,
 }
 
 impl GlobalAwsAuthProvider {
     fn new(handle: tokio::runtime::Handle, http_client: Arc<dyn HttpClient>) -> Self {
-        let coerced_client = AwsHttpClient::new(http_client.clone(), handle.clone());
-
-        let ssooidc_client = SsoOidcClient::from_conf(
-            Config::builder()
-                .http_client(coerced_client.clone())
-                .build(),
-        );
-
         Self {
             handle,
-            ssooidc_client: OnceCell::from(ssooidc_client),
+            region: None,
+            http_client: http_client.clone(),
+            ssooidc_client: OnceCell::new(),
         }
+    }
+
+    fn ssooidc_client(&self) -> &SsoOidcClient {
+        self.ssooidc_client.get_or_init(|| {
+            let coerced_client = AwsHttpClient::new(self.http_client.clone(), self.handle.clone());
+
+            let ssooidc_client = SsoOidcClient::from_conf(
+                Config::builder()
+                    .http_client(coerced_client.clone())
+                    .build(),
+            );
+
+            ssooidc_client
+        })
     }
 }
 

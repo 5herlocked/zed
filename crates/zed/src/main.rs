@@ -536,6 +536,7 @@ fn main() {
         settings_ui::init(cx);
         extensions_ui::init(cx);
         zeta::init(cx);
+        aws_auth_ui::init(&app_state, cx);
 
         cx.observe_global::<SettingsStore>({
             let fs = fs.clone();

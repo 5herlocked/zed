@@ -1641,6 +1641,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws_auth_ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws_auth",
+ "call",
+ "channel",
+ "chrono",
+ "client",
+ "collections",
+ "db",
+ "editor",
+ "emojis",
+ "futures 0.3.31",
+ "fuzzy",
+ "gpui",
+ "http_client",
+ "language",
+ "menu",
+ "notifications",
+ "picker",
+ "pretty_assertions",
+ "project",
+ "release_channel",
+ "rich_text",
+ "rpc",
+ "schemars",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "settings",
+ "smallvec",
+ "story",
+ "telemetry",
+ "theme",
+ "time",
+ "time_format",
+ "title_bar",
+ "tree-sitter-md",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "aws_http_client"
 version = "0.1.0"
 dependencies = [
@@ -16782,6 +16827,8 @@ dependencies = [
  "audio",
  "auto_update",
  "auto_update_ui",
+ "aws_auth",
+ "aws_auth_ui",
  "backtrace",
  "breadcrumbs",
  "call",
