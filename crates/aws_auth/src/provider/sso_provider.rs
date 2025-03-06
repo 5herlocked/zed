@@ -1,18 +1,16 @@
 use anyhow::{anyhow, Context, Error, Result};
+use aws_config::Region;
 use aws_credential_types::provider::future::ProvideToken as TokenProviderFuture;
 use aws_credential_types::Token;
-// use aws_sdk_sso::Client as SsoClient;
-use aws_config::Region;
 use gpui::{App, AppContext, Context as GpuiContext, Global, ReadGlobal, Task};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::OnceCell;
 
-use crate::{AuthError, SsoOidcClient};
-// use uuid::Uuid;
+use crate::{AuthError, SsoOidcClient, TokenStore};
 
 /// Token representing an SSO access token
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,53 +43,6 @@ impl ClientRegistration {
         // Add a small buffer (5 minutes) to ensure we don't use tokens that are about to expire
         let buffer = Duration::seconds(5 * 60);
         OffsetDateTime::now_utc() + buffer >= self.expires_at
-    }
-}
-
-/// Token store for managing SSO tokens and client registrations
-#[derive(Default)]
-pub struct TokenStore {
-    tokens: HashMap<String, SsoToken>,
-    registrations: HashMap<String, ClientRegistration>,
-}
-
-impl TokenStore {
-    pub fn new() -> Self {
-        Self {
-            tokens: HashMap::new(),
-            registrations: HashMap::new(),
-        }
-    }
-
-    // Token methods
-    pub fn store_token(&mut self, connection_id: &str, token: SsoToken) {
-        self.tokens.insert(connection_id.to_string(), token);
-    }
-
-    pub fn get_token(&self, connection_id: &str) -> Option<SsoToken> {
-        self.tokens.get(connection_id).cloned()
-    }
-
-    pub fn remove_token(&mut self, connection_id: &str) {
-        self.tokens.remove(connection_id);
-    }
-
-    // Registration methods
-    pub fn store_registration(&mut self, key: &str, registration: ClientRegistration) {
-        self.registrations.insert(key.to_string(), registration);
-    }
-
-    pub fn get_registration(&self, key: &str) -> Option<ClientRegistration> {
-        self.registrations.get(key).cloned()
-    }
-
-    pub fn remove_registration(&mut self, key: &str) {
-        self.registrations.remove(key);
-    }
-
-    pub fn invalidate_all(&mut self) {
-        self.tokens.clear();
-        self.registrations.clear();
     }
 }
 
@@ -153,19 +104,25 @@ impl SsoAccessTokenProvider {
         Ok(())
     }
 
-    /// Get cached token if available
-    pub async fn get_token(&self) -> Option<SsoToken> {
+    /// Get cached token if available, refresh it if expired, or create a new one
+    pub async fn get_token(&self) -> Result<SsoToken, AuthError> {
         let token_store = self.token_store.lock().unwrap();
-        let token = token_store.get_token(&self.token_cache_key());
 
-        // Return token if it exists and is not expired
-        if let Some(token) = token {
+        if let Some(token) = token_store.get_token(&self.token_cache_key()) {
             if !token.is_expired() {
-                return Some(token);
+                return Ok(token);
+            } else if let Ok(refreshed_token) = self.refresh_token(&token).await {
+                return Ok(refreshed_token);
             }
         }
 
-        None
+        if let Ok(new_token) = self.create_token(false).await {
+            return Ok(new_token);
+        }
+
+        Err(AuthError::AuthenticationFailed(
+            "Failed to obtain a valid token".to_string(),
+        ))
     }
 
     /// Create a new token through device authorization flow

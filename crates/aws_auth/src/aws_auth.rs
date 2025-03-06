@@ -1,7 +1,9 @@
+mod credential_cache;
 mod provider;
 
 use std::cell::OnceCell;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Error, Result};
 use aws_config::Region;
@@ -13,6 +15,8 @@ pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
 use aws_sdk_ssooidc::Config;
 use gpui::http_client::HttpClient;
 use gpui::{App, AppContext, Global, ReadGlobal};
+use provider::sso_provider::{ClientRegistration, SsoToken};
+use std::collections::HashMap;
 use thiserror::Error;
 
 pub fn init(cx: &mut App, handle: tokio::runtime::Handle, http_client: Arc<dyn HttpClient>) {
@@ -48,7 +52,7 @@ pub enum ConnectionState {
 struct GlobalAwsAuthProvider {
     handle: tokio::runtime::Handle,
     region: Option<Region>,
-    http_client:  Arc<dyn HttpClient>,
+    http_client: Arc<dyn HttpClient>,
     ssooidc_client: OnceCell<SsoOidcClient>,
 }
 
@@ -132,4 +136,110 @@ pub enum AuthError {
 
     #[error("Timeout")]
     Timeout,
+}
+
+/// Token store for managing SSO tokens and client registrations
+#[derive(Default)]
+pub struct TokenStore {
+    tokens: HashMap<String, SsoToken>,
+    registrations: HashMap<String, ClientRegistration>,
+}
+
+impl TokenStore {
+    pub fn new() -> Self {
+        Self {
+            tokens: HashMap::new(),
+            registrations: HashMap::new(),
+        }
+    }
+
+    // Token methods
+    pub fn store_token(&mut self, connection_id: &str, token: SsoToken) {
+        self.tokens.insert(connection_id.to_string(), token);
+    }
+
+    pub fn get_token(&self, connection_id: &str) -> Option<SsoToken> {
+        self.tokens.get(connection_id).cloned()
+    }
+
+    pub fn remove_token(&mut self, connection_id: &str) {
+        self.tokens.remove(connection_id);
+    }
+
+    // Registration methods
+    pub fn store_registration(&mut self, key: &str, registration: ClientRegistration) {
+        self.registrations.insert(key.to_string(), registration);
+    }
+
+    pub fn get_registration(&self, key: &str) -> Option<ClientRegistration> {
+        self.registrations.get(key).cloned()
+    }
+
+    pub fn remove_registration(&mut self, key: &str) {
+        self.registrations.remove(key);
+    }
+
+    pub fn invalidate_all(&mut self) {
+        self.tokens.clear();
+        self.registrations.clear();
+    }
+}
+
+pub struct CredentialCache {
+    credentials: HashMap<String, Credentials>,
+    registrations: HashMap<String, ClientRegistration>,
+}
+
+impl CredentialCache {
+    pub fn new() -> Self {
+        Self {
+            credentials: HashMap::new(),
+            registrations: HashMap::new(),
+        }
+    }
+
+    /// Stores a new credential in the cache.
+    pub fn store_credential(&mut self, connection_id: String, credential: Credentials) {
+        self.credentials.insert(connection_id, credential);
+    }
+
+    /// Retrieves a credential from the cache if it is still valid.
+    pub fn get_credential(&self, connection_id: &str) -> Option<Credentials> {
+        if let Some(credential) = self.credentials.get(connection_id) {
+            if let Some(expiry) = credential.expiry() {
+                if expiry > SystemTime::now() {
+                    return Some(credential.clone());
+                }
+            } else {
+                return Some(credential.clone()); // No expiry set, consider it valid
+            }
+        }
+        None
+    }
+
+    /// Removes a credential from the cache.
+    pub fn remove_credential(&mut self, connection_id: &str) -> Option<()> {
+        self.credentials.remove(connection_id).map(|_| ())
+    }
+
+    /// Stores a new client registration in the cache.
+    pub fn store_registration(&mut self, connection_id: String, registration: ClientRegistration) {
+        self.registrations.insert(connection_id, registration);
+    }
+
+    /// Retrieves a client registration from the cache.
+    pub fn get_registration(&self, connection_id: &str) -> Option<ClientRegistration> {
+        self.registrations.get(connection_id).cloned()
+    }
+
+    /// Removes a client registration from the cache.
+    pub fn remove_registration(&mut self, connection_id: &str) -> Option<()> {
+        self.registrations.remove(connection_id).map(|_| ())
+    }
+
+    /// Invalidates all cached credentials and registrations.
+    pub fn invalidate_all(&mut self) {
+        self.credentials.clear();
+        self.registrations.clear();
+    }
 }
