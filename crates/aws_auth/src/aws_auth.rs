@@ -12,7 +12,8 @@ use aws_credential_types::Credentials;
 use aws_http_client::AwsHttpClient;
 pub(crate) use aws_sdk_sso::Client as SsoClient;
 pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
-use aws_sdk_ssooidc::Config;
+use aws_sdk_ssooidc::Config as OidcConfig;
+use aws_sdk_sso::Config as SsoConfig;
 use gpui::http_client::HttpClient;
 use gpui::{App, AppContext, Global, ReadGlobal};
 use provider::sso_provider::{ClientRegistration, SsoToken};
@@ -54,6 +55,7 @@ struct GlobalAwsAuthProvider {
     region: Option<Region>,
     http_client: Arc<dyn HttpClient>,
     ssooidc_client: OnceCell<SsoOidcClient>,
+    sso_client: OnceCell<SsoClient>,
 }
 
 impl GlobalAwsAuthProvider {
@@ -63,6 +65,7 @@ impl GlobalAwsAuthProvider {
             region: None,
             http_client: http_client.clone(),
             ssooidc_client: OnceCell::new(),
+            sso_client: OnceCell::new(),
         }
     }
 
@@ -71,7 +74,7 @@ impl GlobalAwsAuthProvider {
             let coerced_client = AwsHttpClient::new(self.http_client.clone(), self.handle.clone());
 
             let ssooidc_client = SsoOidcClient::from_conf(
-                Config::builder()
+                OidcConfig::builder()
                     .http_client(coerced_client.clone())
                     .build(),
             );
@@ -79,27 +82,23 @@ impl GlobalAwsAuthProvider {
             ssooidc_client
         })
     }
+
+    fn sso_client(&self) -> &SsoClient {
+        self.sso_client.get_or_init(|| {
+            let coerced_client = AwsHttpClient::new(self.http_client.clone(), self.handle.clone());
+
+            let sso_client = SsoClient::from_conf(
+                SsoConfig::builder()
+                    .http_client(coerced_client.clone())
+                    .build(),
+            );
+
+            sso_client
+        })
+    }
 }
 
 impl Global for GlobalAwsAuthProvider {}
-
-#[derive(Debug)]
-pub struct AwsAuthProvider {}
-
-impl ProvideCredentials for AwsAuthProvider {
-    /// Provides Credentials
-    fn provide_credentials<'a>(&'a self) -> FutureProvider<'a>
-    where
-        Self: 'a,
-    {
-        todo!()
-    }
-
-    fn fallback_on_interrupt(&self) -> Option<Credentials> {
-        let creds = Credentials::for_tests();
-        Some(creds)
-    }
-}
 
 /// Errors that can occur during authentication operations
 #[derive(Debug, Error)]

@@ -46,24 +46,30 @@ impl ClientRegistration {
     }
 }
 
-/// SSO Access Token Provider - handles token creation and management
-pub struct SsoAccessTokenProvider {
+/// SSO Access Provider - handles all SSO tasks
+/// Bearer Auth with Tokens,
+/// GetRoleCredentials as a function of SSO
+pub struct SsoAccessProvider {
     identifier: String,
     start_url: String,
     region: String,
     scopes: Vec<String>,
     token_store: Arc<Mutex<TokenStore>>,
+    credentials_store: Arc<Mutex<CredentialCache>>,
     ssooidc_client: SsoOidcClient,
+    sso_client: SsoClient,
 }
 
-impl SsoAccessTokenProvider {
+impl SsoAccessProvider {
     pub fn new(
         identifier: String,
         start_url: String,
         region: String,
         scopes: Vec<String>,
         token_store: Arc<Mutex<TokenStore>>,
+        credentials_store: Arc<Mutex<CredentialCache>>,
         ssooidc_client: SsoOidcClient,
+        sso_client: SsoClient,
     ) -> Self {
         Self {
             identifier,
@@ -71,7 +77,9 @@ impl SsoAccessTokenProvider {
             region,
             scopes,
             token_store,
+            credentials_store,
             ssooidc_client,
+            sso_client,
         }
     }
 
@@ -318,14 +326,3 @@ impl SsoAccessTokenProvider {
         }
     }
 }
-
-pub struct SsoCredentialProvider {
-    profile_name: String,
-    start_url: String,
-    region: String,
-    role_arn: String,
-    credential_store: Arc<Mutex<CredentialCache>>,
-    ssooidc_client: SsoClient,
-}
-
-impl SsoCredentialProvider {}
