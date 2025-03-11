@@ -1,4 +1,4 @@
-mod provider;
+mod providers;
 
 use std::cell::OnceCell;
 use std::sync::Arc;
@@ -11,12 +11,12 @@ use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use aws_http_client::AwsHttpClient;
 pub(crate) use aws_sdk_sso::Client as SsoClient;
+use aws_sdk_sso::Config as SsoConfig;
 pub(crate) use aws_sdk_ssooidc::Client as SsoOidcClient;
 use aws_sdk_ssooidc::Config as OidcConfig;
-use aws_sdk_sso::Config as SsoConfig;
 use gpui::http_client::HttpClient;
 use gpui::{App, AppContext, Global, ReadGlobal};
-use provider::sso_provider::{ClientRegistration, SsoToken};
+use providers::sso_provider::{ClientRegistration, SsoToken};
 use std::collections::HashMap;
 use thiserror::Error;
 
