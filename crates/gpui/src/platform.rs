@@ -88,7 +88,10 @@ pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
 
 #[cfg(target_os = "ios")]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
-    Rc::new(IosPlatform::new(headless))
+    if headless {
+        panic!("Headless mode is not supported on iOS")
+    }
+    Rc::new(IosPlatform::new())
 }
 
 

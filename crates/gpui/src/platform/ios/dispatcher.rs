@@ -1,62 +1,47 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-
 use crate::{PlatformDispatcher, TaskLabel};
 use async_task::Runnable;
-use objc::{
-    class, msg_send,
-    runtime::{BOOL, YES},
-    sel, sel_impl,
-};
 use parking::{Parker, Unparker};
 use parking_lot::Mutex;
-use std::{
-    ffi::c_void,
-    ptr::{addr_of, NonNull},
-    sync::Arc,
-    time::Duration,
-};
+use std::{ffi::c_void, sync::Arc, time::Duration};
+use std::ffi::{c_long, c_ulong};
+use std::ptr::NonNull;
+use objc2::{class, msg_send};
 
-/// All items in the generated file are marked as pub, so we're gonna wrap it in a separate mod to prevent
-/// these pub items from leaking into public API.
-pub(crate) mod dispatch_sys {
-    include!(concat!(env!("OUT_DIR"), "/dispatch_sys.rs"));
-}
+// UIKit background task identifier
+pub type UIBackgroundTaskIdentifier = usize;
+pub const INVALID_BACKGROUND_TASK: UIBackgroundTaskIdentifier = usize::MAX;
 
-use dispatch_sys::*;
-pub(crate) fn dispatch_get_main_queue() -> dispatch_queue_t {
-    unsafe { addr_of!(_dispatch_main_q) as *const _ as dispatch_queue_t }
-}
-
-pub(crate) struct MacDispatcher {
+pub(crate) struct IosPlatformDispatcher {
     parker: Arc<Mutex<Parker>>,
 }
 
-impl Default for MacDispatcher {
+impl Default for IosPlatformDispatcher {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MacDispatcher {
+impl IosPlatformDispatcher {
     pub fn new() -> Self {
-        MacDispatcher {
+        IosPlatformDispatcher {
             parker: Arc::new(Mutex::new(Parker::new())),
         }
     }
 }
 
-impl PlatformDispatcher for MacDispatcher {
+impl PlatformDispatcher for IosPlatformDispatcher {
     fn is_main_thread(&self) -> bool {
-        let is_main_thread: BOOL = unsafe { msg_send![class!(NSThread), isMainThread] };
-        is_main_thread == YES
+        unsafe {
+            let is_main_thread: bool = msg_send![class!(NSThread), isMainThread];
+            is_main_thread
+        }
     }
 
     fn dispatch(&self, runnable: Runnable, _: Option<TaskLabel>) {
         unsafe {
+            let queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
             dispatch_async_f(
-                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0),
+                queue,
                 runnable.into_raw().as_ptr() as *mut c_void,
                 Some(trampoline),
             );
@@ -75,9 +60,8 @@ impl PlatformDispatcher for MacDispatcher {
 
     fn dispatch_after(&self, duration: Duration, runnable: Runnable) {
         unsafe {
-            let queue =
-                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH.try_into().unwrap(), 0);
-            let when = dispatch_time(DISPATCH_TIME_NOW as u64, duration.as_nanos() as i64);
+            let queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+            let when = dispatch_time(DISPATCH_TIME_NOW, duration.as_nanos() as i64);
             dispatch_after_f(
                 when,
                 queue,
@@ -105,3 +89,28 @@ extern "C" fn trampoline(runnable: *mut c_void) {
     let task = unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(runnable as *mut ())) };
     task.run();
 }
+
+// Import required libdispatch functions
+#[link(name = "System", kind = "dylib")]
+extern "C" {
+    fn dispatch_get_main_queue() -> DispatchQueueT;
+    fn dispatch_get_global_queue(priority: c_long, flags: c_ulong) -> DispatchQueueT;
+    fn dispatch_async_f(
+        queue: DispatchQueueT,
+        context: *mut c_void,
+        work: Option<extern "C" fn(*mut c_void)>,
+    );
+    fn dispatch_after_f(
+        when: DispatchTimeT,
+        queue: DispatchQueueT,
+        context: *mut c_void,
+        work: Option<extern "C" fn(*mut c_void)>,
+    );
+    fn dispatch_time(when: DispatchTimeT, delta: i64) -> DispatchTimeT;
+}
+
+type DispatchQueueT = *mut c_void;
+type DispatchTimeT = u64;
+
+const DISPATCH_TIME_NOW: DispatchTimeT = 0;
+const DISPATCH_QUEUE_PRIORITY_HIGH: c_long = 2;

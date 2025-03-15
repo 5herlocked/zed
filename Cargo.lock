@@ -2002,7 +2002,7 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
- "objc2-metal",
+ "objc2-metal 0.2.2",
  "objc2-quartz-core 0.2.2",
  "objc2-ui-kit 0.2.2",
  "raw-window-handle",
@@ -5872,7 +5872,11 @@ dependencies = [
  "num_cpus",
  "objc",
  "objc2 0.5.2",
- "objc2-metal",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "objc2-foundation 0.3.0",
+ "objc2-metal 0.2.2",
+ "objc2-ui-kit 0.3.0",
  "oo7",
  "open",
  "parking",
@@ -8216,6 +8220,7 @@ dependencies = [
  "metal",
  "objc",
  "objc2 0.6.0",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.0",
  "objc2-ui-kit 0.3.0",
 ]
@@ -9043,9 +9048,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dca602628b65356b6513290a21a6405b4d4027b8b250f0b98dddbb28b7de02"
 dependencies = [
  "bitflags 2.8.0",
+ "block2 0.6.0",
+ "libc",
  "objc2 0.6.0",
  "objc2-core-foundation",
  "objc2-io-surface",
+ "objc2-metal 0.3.0",
 ]
 
 [[package]]
@@ -9057,7 +9065,7 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "objc2-metal",
+ "objc2-metal 0.2.2",
 ]
 
 [[package]]
@@ -9090,6 +9098,20 @@ checksum = "d31f4c5b5192304996badc466aeadffe1411d73a9bbd3b18b6b2ee9d048b07bd"
 dependencies = [
  "objc2 0.6.0",
  "objc2-foundation 0.3.0",
+]
+
+[[package]]
+name = "objc2-core-text"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6fde15abfe00bf9f1eda220addbdfa6c62b0e5595e98208e8cdbc2ec0f6970a6"
+dependencies = [
+ "bitflags 2.8.0",
+ "block2 0.6.0",
+ "libc",
+ "objc2 0.6.0",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
 ]
 
 [[package]]
@@ -9159,6 +9181,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-metal"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01c41bc8b0e50ea7a5304a56f25e0066f526e99641b46fd7b9ad4421dd35bff6"
+dependencies = [
+ "bitflags 2.8.0",
+ "objc2 0.6.0",
+ "objc2-foundation 0.3.0",
+]
+
+[[package]]
 name = "objc2-quartz-core"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9168,7 +9201,7 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
- "objc2-metal",
+ "objc2-metal 0.2.2",
 ]
 
 [[package]]
