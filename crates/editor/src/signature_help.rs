@@ -206,7 +206,7 @@ impl Editor {
                             color: cx.theme().colors().text,
                             font_family: settings.buffer_font.family.clone(),
                             font_fallbacks: settings.buffer_font.fallbacks.clone(),
-                            font_size: settings.buffer_font_size.into(),
+                            font_size: settings.buffer_font_size(cx).into(),
                             font_weight: settings.buffer_font.weight,
                             line_height: relative(settings.buffer_line_height.value()),
                             ..Default::default()
@@ -310,7 +310,7 @@ impl SignatureHelpPopover {
             .child(
                 div().px_4().pb_1().child(
                     StyledText::new(self.label.clone())
-                        .with_highlights(&self.style, self.highlights.iter().cloned()),
+                        .with_default_highlights(&self.style, self.highlights.iter().cloned()),
                 ),
             )
             .into_any_element()
