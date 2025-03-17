@@ -315,7 +315,7 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
     decl.register()
 }
 
-struct MacWindowState {
+struct IosWindowState {
     handle: AnyWindowHandle,
     executor: ForegroundExecutor,
     native_window: id,
@@ -343,7 +343,7 @@ struct MacWindowState {
     fullscreen_restore_bounds: Bounds<Pixels>,
 }
 
-impl MacWindowState {
+impl IosWindowState {
     fn move_traffic_light(&self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() {
@@ -484,11 +484,11 @@ impl MacWindowState {
     }
 }
 
-unsafe impl Send for MacWindowState {}
+unsafe impl Send for IosWindowState {}
 
-pub(crate) struct MacWindow(Arc<Mutex<MacWindowState>>);
+pub(crate) struct IosWindow(Arc<Mutex<IosWindowState>>);
 
-impl MacWindow {
+impl IosWindow {
     pub fn open(
         handle: AnyWindowHandle,
         WindowParams {
@@ -586,7 +586,7 @@ impl MacWindow {
             let native_view = NSView::init(native_view);
             assert!(!native_view.is_null());
 
-            let mut window = Self(Arc::new(Mutex::new(MacWindowState {
+            let mut window = Self(Arc::new(Mutex::new(IosWindowState {
                 handle,
                 executor,
                 native_window,
@@ -753,7 +753,7 @@ impl MacWindow {
     }
 }
 
-impl Drop for MacWindow {
+impl Drop for IosWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
         this.renderer.destroy();
@@ -774,7 +774,7 @@ impl Drop for MacWindow {
     }
 }
 
-impl PlatformWindow for MacWindow {
+impl PlatformWindow for IosWindow {
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.as_ref().lock().bounds()
     }
@@ -1129,7 +1129,7 @@ impl PlatformWindow for MacWindow {
     }
 }
 
-impl rwh::HasWindowHandle for MacWindow {
+impl rwh::HasWindowHandle for IosWindow {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
         // SAFETY: The AppKitWindowHandle is a wrapper around a pointer to an NSView
         unsafe {
@@ -1140,7 +1140,7 @@ impl rwh::HasWindowHandle for MacWindow {
     }
 }
 
-impl rwh::HasDisplayHandle for MacWindow {
+impl rwh::HasDisplayHandle for IosWindow {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
         // SAFETY: This is a no-op on macOS
         unsafe {
@@ -1170,9 +1170,9 @@ fn get_scale_factor(native_window: id) -> f32 {
     }
 }
 
-unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {
+unsafe fn get_window_state(object: &Object) -> Arc<Mutex<IosWindowState>> {
     let raw: *mut c_void = *object.get_ivar(WINDOW_STATE_IVAR);
-    let rc1 = Arc::from_raw(raw as *mut Mutex<MacWindowState>);
+    let rc1 = Arc::from_raw(raw as *mut Mutex<IosWindowState>);
     let rc2 = rc1.clone();
     mem::forget(rc1);
     rc2
@@ -1180,7 +1180,7 @@ unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {
 
 unsafe fn drop_window_state(object: &Object) {
     let raw: *mut c_void = *object.get_ivar(WINDOW_STATE_IVAR);
-    Arc::from_raw(raw as *mut Mutex<MacWindowState>);
+    Arc::from_raw(raw as *mut Mutex<IosWindowState>);
 }
 
 extern "C" fn yes(_: &Object, _: Sel) -> BOOL {
@@ -1934,7 +1934,7 @@ extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {
 }
 
 async fn synthetic_drag(
-    window_state: Weak<Mutex<MacWindowState>>,
+    window_state: Weak<Mutex<IosWindowState>>,
     drag_id: usize,
     event: MouseMoveEvent,
 ) {
@@ -1955,7 +1955,7 @@ async fn synthetic_drag(
     }
 }
 
-fn send_new_event(window_state_lock: &Mutex<MacWindowState>, e: PlatformInput) -> bool {
+fn send_new_event(window_state_lock: &Mutex<IosWindowState>, e: PlatformInput) -> bool {
     let window_state = window_state_lock.lock().event_callback.take();
     if let Some(mut callback) = window_state {
         callback(e);
@@ -1966,7 +1966,7 @@ fn send_new_event(window_state_lock: &Mutex<MacWindowState>, e: PlatformInput) -
     }
 }
 
-fn drag_event_position(window_state: &Mutex<MacWindowState>, dragging_info: id) -> Point<Pixels> {
+fn drag_event_position(window_state: &Mutex<IosWindowState>, dragging_info: id) -> Point<Pixels> {
     let drag_location: NSPoint = unsafe { msg_send![dragging_info, draggingLocation] };
     convert_mouse_position(drag_location, window_state.lock().content_size().height)
 }
