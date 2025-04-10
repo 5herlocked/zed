@@ -209,6 +209,7 @@ impl LanguageSettings {
 #[serde(rename_all = "snake_case")]
 pub enum EditPredictionProvider {
     None,
+    AmazonQ,
     #[default]
     Copilot,
     Supermaven,
@@ -221,7 +222,8 @@ impl EditPredictionProvider {
             EditPredictionProvider::Zed => true,
             EditPredictionProvider::None
             | EditPredictionProvider::Copilot
-            | EditPredictionProvider::Supermaven => false,
+            | EditPredictionProvider::Supermaven
+            | EditPredictionProvider::AmazonQ => false,
         }
     }
 }

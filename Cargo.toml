@@ -4,6 +4,7 @@ members = [
     "crates/activity_indicator",
     "crates/agent",
     "crates/agent_rules",
+    "crates/amazon_q",
     "crates/anthropic",
     "crates/askpass",
     "crates/assets",
@@ -213,6 +214,7 @@ activity_indicator = { path = "crates/activity_indicator" }
 agent = { path = "crates/agent" }
 agent_rules = { path = "crates/agent_rules" }
 ai = { path = "crates/ai" }
+amazon_q = { path = "crates/amazon_q" }
 anthropic = { path = "crates/anthropic" }
 askpass = { path = "crates/askpass" }
 assets = { path = "crates/assets" }
@@ -389,6 +391,7 @@ aho-corasick = "1.1"
 alacritty_terminal = { git = "https://github.com/zed-industries/alacritty.git", branch = "add-hush-login-flag" }
 any_vec = "0.14"
 anyhow = "1.0.86"
+amzn-codewhisperer-client = { git = "https://github.com/aws/amazon-q-developer-cli", branch = "main" }
 arrayvec = { version = "0.7.4", features = ["serde"] }
 ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
 async-compat = "0.2.1"
