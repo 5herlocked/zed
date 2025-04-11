@@ -13,12 +13,13 @@ use std::{
 use text::{ToOffset, ToPoint};
 use unicode_segmentation::UnicodeSegmentation;
 
+pub use amzn_codewhisperer_client::*;
+
 pub const DEBOUNCE_TIMEOUT: Duration = Duration::from_millis(75);
 
 pub struct AmazonQCompletionProvider {
-    supermaven: Entity<AmazonQ>,
+    amazon_q: Entity<AmazonQ>,
     buffer_id: Option<EntityId>,
-    completion_id: Option<AmazonQCompletionStateId>,
     file_extension: Option<String>,
     pending_refresh: Option<Task<Result<()>>>,
 }
@@ -28,7 +29,6 @@ impl AmazonQCompletionProvider {
         Self {
             amazon_q,
             buffer_id: None,
-            completion_id: None,
             file_extension: None,
             pending_refresh: None,
         }
@@ -127,7 +127,7 @@ impl EditPredictionProvider for AmazonQCompletionProvider {
         debounce: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(mut completion) = self.amazon_q.update(cx, |supermaven, cx| {
+        let Some(mut completion) = self.amazon_q.update(cx, |amazon_q, cx| {
             amazon_q.complete(&buffer_handle, cursor_position, cx)
         }) else {
             return;
@@ -140,7 +140,6 @@ impl EditPredictionProvider for AmazonQCompletionProvider {
 
             while let Some(()) = completion.updates.next().await {
                 this.update(cx, |this, cx| {
-                    this.completion_id = Some(completion.id);
                     this.buffer_id = Some(buffer_handle.entity_id());
                     this.file_extension = buffer_handle.read(cx).file().and_then(|file| {
                         Some(
@@ -169,12 +168,10 @@ impl EditPredictionProvider for AmazonQCompletionProvider {
 
     fn accept(&mut self, _cx: &mut Context<Self>) {
         self.pending_refresh = None;
-        self.completion_id = None;
     }
 
     fn discard(&mut self, _cx: &mut Context<Self>) {
         self.pending_refresh = None;
-        self.completion_id = None;
     }
 
     fn suggest(
