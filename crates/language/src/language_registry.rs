@@ -157,6 +157,9 @@ pub enum BinaryStatus {
     None,
     CheckingForUpdate,
     Downloading,
+    Starting,
+    Stopping,
+    Stopped,
     Failed { error: String },
 }
 
@@ -248,7 +251,7 @@ pub struct LanguageQueries {
 
 #[derive(Clone, Default)]
 struct ServerStatusSender {
-    txs: Arc<Mutex<Vec<mpsc::UnboundedSender<(LanguageServerName, LanguageServerStatusUpdate)>>>>,
+    txs: Arc<Mutex<Vec<mpsc::UnboundedSender<(LanguageServerName, BinaryStatus)>>>>,
 }
 
 pub struct LoadedLanguage {
@@ -331,6 +334,9 @@ impl LanguageRegistry {
         if let Some(adapters) = state.lsp_adapters.get_mut(language_name) {
             adapters.retain(|adapter| &adapter.name != name)
         }
+        state.all_lsp_adapters.remove(name);
+        state.available_lsp_adapters.remove(name);
+
         state.version += 1;
         state.reload_count += 1;
         *state.subscription.0.borrow_mut() = ();
@@ -1085,11 +1091,7 @@ impl LanguageRegistry {
         self.state.read().all_lsp_adapters.get(name).cloned()
     }
 
-    pub fn update_lsp_status(
-        &self,
-        server_name: LanguageServerName,
-        status: LanguageServerStatusUpdate,
-    ) {
+    pub fn update_lsp_binary_status(&self, server_name: LanguageServerName, status: BinaryStatus) {
         self.lsp_binary_status_tx.send(server_name, status);
     }
 
@@ -1145,7 +1147,7 @@ impl LanguageRegistry {
 
     pub fn language_server_binary_statuses(
         &self,
-    ) -> mpsc::UnboundedReceiver<(LanguageServerName, LanguageServerStatusUpdate)> {
+    ) -> mpsc::UnboundedReceiver<(LanguageServerName, BinaryStatus)> {
         self.lsp_binary_status_tx.subscribe()
     }
 
@@ -1171,7 +1173,7 @@ impl LanguageRegistryState {
         if let Some(theme) = self.theme.as_ref() {
             language.set_theme(theme.syntax());
         }
-        self.language_settings.languages.insert(
+        self.language_settings.languages.0.insert(
             language.name(),
             LanguageSettingsContent {
                 tab_size: language.config.tab_size,
@@ -1260,15 +1262,13 @@ impl LanguageRegistryState {
 }
 
 impl ServerStatusSender {
-    fn subscribe(
-        &self,
-    ) -> mpsc::UnboundedReceiver<(LanguageServerName, LanguageServerStatusUpdate)> {
+    fn subscribe(&self) -> mpsc::UnboundedReceiver<(LanguageServerName, BinaryStatus)> {
         let (tx, rx) = mpsc::unbounded();
         self.txs.lock().push(tx);
         rx
     }
 
-    fn send(&self, name: LanguageServerName, status: LanguageServerStatusUpdate) {
+    fn send(&self, name: LanguageServerName, status: BinaryStatus) {
         let mut txs = self.txs.lock();
         txs.retain(|tx| tx.unbounded_send((name.clone(), status.clone())).is_ok());
     }

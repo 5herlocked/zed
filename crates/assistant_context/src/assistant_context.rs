@@ -11,6 +11,7 @@ use assistant_slash_command::{
 use assistant_slash_commands::FileCommandMetadata;
 use client::{self, Client, proto, telemetry::Telemetry};
 use clock::ReplicaId;
+use cloud_llm_client::CompletionIntent;
 use collections::{HashMap, HashSet};
 use fs::{Fs, RenameOptions};
 use futures::{FutureExt, StreamExt, future::Shared};
@@ -46,7 +47,6 @@ use text::{BufferSnapshot, ToPoint};
 use ui::IconName;
 use util::{ResultExt, TryFutureExt, post_inc};
 use uuid::Uuid;
-use zed_llm_client::CompletionIntent;
 
 pub use crate::context_store::*;
 
@@ -2140,7 +2140,8 @@ impl AssistantContext {
                                         );
                                     }
                                     LanguageModelCompletionEvent::ToolUse(_) |
-                                    LanguageModelCompletionEvent::UsageUpdate(_)  => {}
+                                    LanguageModelCompletionEvent::ToolUseJsonParseError { .. } |
+                                    LanguageModelCompletionEvent::UsageUpdate(_) => {}
                                 }
                             });
 
@@ -2292,6 +2293,7 @@ impl AssistantContext {
             tool_choice: None,
             stop: Vec::new(),
             temperature: model.and_then(|model| AgentSettings::temperature_for_model(model, cx)),
+            thinking_allowed: true,
         };
         for message in self.messages(cx) {
             if message.status != MessageStatus::Done {
@@ -2346,13 +2348,13 @@ impl AssistantContext {
                 completion_request.messages.push(request_message);
             }
         }
-        let supports_max_mode = if let Some(model) = model {
-            model.supports_max_mode()
+        let supports_burn_mode = if let Some(model) = model {
+            model.supports_burn_mode()
         } else {
             false
         };
 
-        if supports_max_mode {
+        if supports_burn_mode {
             completion_request.mode = Some(self.completion_mode.into());
         }
         completion_request
@@ -2523,6 +2525,12 @@ impl AssistantContext {
             }
 
             let message = start_message;
+            let at_end = range.end >= message.offset_range.end.saturating_sub(1);
+            let role_after = if range.start == range.end || at_end {
+                Role::User
+            } else {
+                message.role
+            };
             let role = message.role;
             let mut edited_buffer = false;
 
@@ -2557,7 +2565,7 @@ impl AssistantContext {
             };
 
             let suffix_metadata = MessageMetadata {
-                role,
+                role: role_after,
                 status: MessageStatus::Done,
                 timestamp: suffix.id.0,
                 cache: None,

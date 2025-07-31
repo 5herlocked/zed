@@ -23,6 +23,7 @@ pub(crate) const WM_GPUI_CURSOR_STYLE_CHANGED: u32 = WM_USER + 1;
 pub(crate) const WM_GPUI_CLOSE_ONE_WINDOW: u32 = WM_USER + 2;
 pub(crate) const WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD: u32 = WM_USER + 3;
 pub(crate) const WM_GPUI_DOCK_MENU_ACTION: u32 = WM_USER + 4;
+pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 const AUTO_HIDE_TASKBAR_THICKNESS_PX: i32 = 1;
@@ -37,6 +38,7 @@ pub(crate) fn handle_msg(
     let handled = match msg {
         WM_ACTIVATE => handle_activate_msg(wparam, state_ptr),
         WM_CREATE => handle_create_msg(handle, state_ptr),
+        WM_DEVICECHANGE => handle_device_change_msg(handle, wparam, state_ptr),
         WM_MOVE => handle_move_msg(handle, lparam, state_ptr),
         WM_SIZE => handle_size_msg(wparam, lparam, state_ptr),
         WM_GETMINMAXINFO => handle_get_min_max_info_msg(lparam, state_ptr),
@@ -48,7 +50,7 @@ pub(crate) fn handle_msg(
         WM_DISPLAYCHANGE => handle_display_change_msg(handle, state_ptr),
         WM_NCHITTEST => handle_hit_test_msg(handle, msg, wparam, lparam, state_ptr),
         WM_PAINT => handle_paint_msg(handle, state_ptr),
-        WM_CLOSE => handle_close_msg(handle, state_ptr),
+        WM_CLOSE => handle_close_msg(state_ptr),
         WM_DESTROY => handle_destroy_msg(handle, state_ptr),
         WM_MOUSEMOVE => handle_mouse_move_msg(handle, lparam, wparam, state_ptr),
         WM_MOUSELEAVE | WM_NCMOUSELEAVE => handle_mouse_leave_msg(state_ptr),
@@ -93,9 +95,10 @@ pub(crate) fn handle_msg(
         WM_IME_STARTCOMPOSITION => handle_ime_position(handle, state_ptr),
         WM_IME_COMPOSITION => handle_ime_composition(handle, lparam, state_ptr),
         WM_SETCURSOR => handle_set_cursor(handle, lparam, state_ptr),
-        WM_SETTINGCHANGE => handle_system_settings_changed(handle, lparam, state_ptr),
+        WM_SETTINGCHANGE => handle_system_settings_changed(handle, wparam, lparam, state_ptr),
         WM_INPUTLANGCHANGE => handle_input_language_changed(lparam, state_ptr),
         WM_GPUI_CURSOR_STYLE_CHANGED => handle_cursor_changed(lparam, state_ptr),
+        WM_GPUI_FORCE_UPDATE_WINDOW => draw_window(handle, true, state_ptr),
         _ => None,
     };
     if let Some(n) = handled {
@@ -181,11 +184,9 @@ fn handle_size_msg(
     let new_size = size(DevicePixels(width), DevicePixels(height));
     let scale_factor = lock.scale_factor;
     if lock.restore_from_minimized.is_some() {
-        lock.renderer
-            .update_drawable_size_even_if_unchanged(new_size);
         lock.callbacks.request_frame = lock.restore_from_minimized.take();
     } else {
-        lock.renderer.update_drawable_size(new_size);
+        lock.renderer.resize(new_size).log_err();
     }
     let new_size = new_size.to_pixels(scale_factor);
     lock.logical_size = new_size;
@@ -238,40 +239,14 @@ fn handle_timer_msg(
 }
 
 fn handle_paint_msg(handle: HWND, state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
-    let mut lock = state_ptr.state.borrow_mut();
-    if let Some(mut request_frame) = lock.callbacks.request_frame.take() {
-        drop(lock);
-        request_frame(Default::default());
-        state_ptr.state.borrow_mut().callbacks.request_frame = Some(request_frame);
-    }
-    unsafe { ValidateRect(Some(handle), None).ok().log_err() };
-    Some(0)
+    draw_window(handle, false, state_ptr)
 }
 
-fn handle_close_msg(handle: HWND, state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
-    let mut lock = state_ptr.state.borrow_mut();
-    let output = if let Some(mut callback) = lock.callbacks.should_close.take() {
-        drop(lock);
-        let should_close = callback();
-        state_ptr.state.borrow_mut().callbacks.should_close = Some(callback);
-        if should_close { None } else { Some(0) }
-    } else {
-        None
-    };
-
-    // Workaround as window close animation is not played with `WS_EX_LAYERED` enabled.
-    if output.is_none() {
-        unsafe {
-            let current_style = get_window_long(handle, GWL_EXSTYLE);
-            set_window_long(
-                handle,
-                GWL_EXSTYLE,
-                current_style & !WS_EX_LAYERED.0 as isize,
-            );
-        }
-    }
-
-    output
+fn handle_close_msg(state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
+    let mut callback = state_ptr.state.borrow_mut().callbacks.should_close.take()?;
+    let should_close = callback();
+    state_ptr.state.borrow_mut().callbacks.should_close = Some(callback);
+    if should_close { None } else { Some(0) }
 }
 
 fn handle_destroy_msg(handle: HWND, state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
@@ -466,12 +441,7 @@ fn handle_keyup_msg(
 }
 
 fn handle_char_msg(wparam: WPARAM, state_ptr: Rc<WindowsWindowStatePtr>) -> Option<isize> {
-    let Some(input) = char::from_u32(wparam.0 as u32)
-        .filter(|c| !c.is_control())
-        .map(String::from)
-    else {
-        return Some(1);
-    };
+    let input = parse_char_message(wparam, &state_ptr)?;
     with_input_handler(&state_ptr, |input_handler| {
         input_handler.replace_text_in_range(None, &input);
     });
@@ -1074,8 +1044,10 @@ fn handle_nc_mouse_up_msg(
     }
 
     let last_pressed = state_ptr.state.borrow_mut().nc_button_pressed.take();
-    if button == MouseButton::Left && last_pressed.is_some() {
-        let handled = match (wparam.0 as u32, last_pressed.unwrap()) {
+    if button == MouseButton::Left
+        && let Some(last_pressed) = last_pressed
+    {
+        let handled = match (wparam.0 as u32, last_pressed) {
             (HTMINBUTTON, HTMINBUTTON) => {
                 unsafe { ShowWindowAsync(handle, SW_MINIMIZE).ok().log_err() };
                 true
@@ -1150,37 +1122,23 @@ fn handle_set_cursor(
 
 fn handle_system_settings_changed(
     handle: HWND,
+    wparam: WPARAM,
     lparam: LPARAM,
     state_ptr: Rc<WindowsWindowStatePtr>,
 ) -> Option<isize> {
-    let mut lock = state_ptr.state.borrow_mut();
-    let display = lock.display;
-    // system settings
-    lock.system_settings.update(display);
-    // mouse double click
-    lock.click_state.system_update();
-    // window border offset
-    lock.border_offset.update(handle).log_err();
-    drop(lock);
-
-    // lParam is a pointer to a string that indicates the area containing the system parameter
-    // that was changed.
-    let parameter = PCWSTR::from_raw(lparam.0 as _);
-    if unsafe { !parameter.is_null() && !parameter.is_empty() } {
-        if let Some(parameter_string) = unsafe { parameter.to_string() }.log_err() {
-            log::info!("System settings changed: {}", parameter_string);
-            match parameter_string.as_str() {
-                "ImmersiveColorSet" => {
-                    handle_system_theme_changed(handle, state_ptr);
-                }
-                _ => {}
-            }
-        }
-    }
-
+    if wparam.0 != 0 {
+        let mut lock = state_ptr.state.borrow_mut();
+        let display = lock.display;
+        lock.system_settings.update(display, wparam.0);
+        lock.click_state.system_update(wparam.0);
+        lock.border_offset.update(handle).log_err();
+    } else {
+        handle_system_theme_changed(handle, lparam, state_ptr)?;
+    };
     // Force to trigger WM_NCCALCSIZE event to ensure that we handle auto hide
     // taskbar correctly.
     notify_frame_changed(handle);
+
     Some(0)
 }
 
@@ -1197,17 +1155,34 @@ fn handle_system_command(wparam: WPARAM, state_ptr: Rc<WindowsWindowStatePtr>) -
 
 fn handle_system_theme_changed(
     handle: HWND,
+    lparam: LPARAM,
     state_ptr: Rc<WindowsWindowStatePtr>,
 ) -> Option<isize> {
-    let mut callback = state_ptr
-        .state
-        .borrow_mut()
-        .callbacks
-        .appearance_changed
-        .take()?;
-    callback();
-    state_ptr.state.borrow_mut().callbacks.appearance_changed = Some(callback);
-    configure_dwm_dark_mode(handle);
+    // lParam is a pointer to a string that indicates the area containing the system parameter
+    // that was changed.
+    let parameter = PCWSTR::from_raw(lparam.0 as _);
+    if unsafe { !parameter.is_null() && !parameter.is_empty() } {
+        if let Some(parameter_string) = unsafe { parameter.to_string() }.log_err() {
+            log::info!("System settings changed: {}", parameter_string);
+            match parameter_string.as_str() {
+                "ImmersiveColorSet" => {
+                    let new_appearance = system_appearance()
+                        .context("unable to get system appearance when handling ImmersiveColorSet")
+                        .log_err()?;
+                    let mut lock = state_ptr.state.borrow_mut();
+                    if new_appearance != lock.appearance {
+                        lock.appearance = new_appearance;
+                        let mut callback = lock.callbacks.appearance_changed.take()?;
+                        drop(lock);
+                        callback();
+                        state_ptr.state.borrow_mut().callbacks.appearance_changed = Some(callback);
+                        configure_dwm_dark_mode(handle, new_appearance);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     Some(0)
 }
 
@@ -1221,6 +1196,85 @@ fn handle_input_language_changed(
         PostThreadMessageW(thread, WM_INPUTLANGCHANGE, WPARAM(validation), lparam).log_err();
     }
     Some(0)
+}
+
+fn handle_device_change_msg(
+    handle: HWND,
+    wparam: WPARAM,
+    state_ptr: Rc<WindowsWindowStatePtr>,
+) -> Option<isize> {
+    if wparam.0 == DBT_DEVNODES_CHANGED as usize {
+        // The reason for sending this message is to actually trigger a redraw of the window.
+        unsafe {
+            PostMessageW(
+                Some(handle),
+                WM_GPUI_FORCE_UPDATE_WINDOW,
+                WPARAM(0),
+                LPARAM(0),
+            )
+            .log_err();
+        }
+        // If the GPU device is lost, this redraw will take care of recreating the device context.
+        // The WM_GPUI_FORCE_UPDATE_WINDOW message will take care of redrawing the window, after
+        // the device context has been recreated.
+        draw_window(handle, true, state_ptr)
+    } else {
+        // Other device change messages are not handled.
+        None
+    }
+}
+
+#[inline]
+fn draw_window(
+    handle: HWND,
+    force_render: bool,
+    state_ptr: Rc<WindowsWindowStatePtr>,
+) -> Option<isize> {
+    let mut request_frame = state_ptr
+        .state
+        .borrow_mut()
+        .callbacks
+        .request_frame
+        .take()?;
+    request_frame(RequestFrameOptions {
+        require_presentation: false,
+        force_render,
+    });
+    state_ptr.state.borrow_mut().callbacks.request_frame = Some(request_frame);
+    unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+    Some(0)
+}
+
+#[inline]
+fn parse_char_message(wparam: WPARAM, state_ptr: &Rc<WindowsWindowStatePtr>) -> Option<String> {
+    let code_point = wparam.loword();
+    let mut lock = state_ptr.state.borrow_mut();
+    // https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-3/#G2630
+    match code_point {
+        0xD800..=0xDBFF => {
+            // High surrogate, wait for low surrogate
+            lock.pending_surrogate = Some(code_point);
+            None
+        }
+        0xDC00..=0xDFFF => {
+            if let Some(high_surrogate) = lock.pending_surrogate.take() {
+                // Low surrogate, combine with pending high surrogate
+                String::from_utf16(&[high_surrogate, code_point]).ok()
+            } else {
+                // Invalid low surrogate without a preceding high surrogate
+                log::warn!(
+                    "Received low surrogate without a preceding high surrogate: {code_point:x}"
+                );
+                None
+            }
+        }
+        _ => {
+            lock.pending_surrogate = None;
+            char::from_u32(code_point as u32)
+                .filter(|c| !c.is_control())
+                .map(|c| c.to_string())
+        }
+    }
 }
 
 #[inline]
@@ -1264,6 +1318,10 @@ where
                 modifiers,
                 capslock: current_capslock(),
             }))
+        }
+        VK_PACKET => {
+            translate_message(handle, wparam, lparam);
+            None
         }
         VK_CAPITAL => {
             let capslock = current_capslock();
