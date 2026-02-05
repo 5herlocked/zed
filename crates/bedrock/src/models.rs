@@ -50,24 +50,39 @@ pub enum Model {
     ClaudeHaiku4_5,
     #[serde(rename = "claude-sonnet-4", alias = "claude-sonnet-4-latest")]
     ClaudeSonnet4,
-    #[serde(rename = "claude-sonnet-4-thinking", alias = "claude-sonnet-4-thinking-latest")]
+    #[serde(
+        rename = "claude-sonnet-4-thinking",
+        alias = "claude-sonnet-4-thinking-latest"
+    )]
     ClaudeSonnet4Thinking,
     #[default]
     #[serde(rename = "claude-sonnet-4-5", alias = "claude-sonnet-4-5-latest")]
     ClaudeSonnet4_5,
-    #[serde(rename = "claude-sonnet-4-5-thinking", alias = "claude-sonnet-4-5-thinking-latest")]
+    #[serde(
+        rename = "claude-sonnet-4-5-thinking",
+        alias = "claude-sonnet-4-5-thinking-latest"
+    )]
     ClaudeSonnet4_5Thinking,
     #[serde(rename = "claude-opus-4-1", alias = "claude-opus-4-1-latest")]
     ClaudeOpus4_1,
-    #[serde(rename = "claude-opus-4-1-thinking", alias = "claude-opus-4-1-thinking-latest")]
+    #[serde(
+        rename = "claude-opus-4-1-thinking",
+        alias = "claude-opus-4-1-thinking-latest"
+    )]
     ClaudeOpus4_1Thinking,
     #[serde(rename = "claude-opus-4-5", alias = "claude-opus-4-5-latest")]
     ClaudeOpus4_5,
-    #[serde(rename = "claude-opus-4-5-thinking", alias = "claude-opus-4-5-thinking-latest")]
+    #[serde(
+        rename = "claude-opus-4-5-thinking",
+        alias = "claude-opus-4-5-thinking-latest"
+    )]
     ClaudeOpus4_5Thinking,
     #[serde(rename = "claude-opus-4-6", alias = "claude-opus-4-6-latest")]
     ClaudeOpus4_6,
-    #[serde(rename = "claude-opus-4-6-thinking", alias = "claude-opus-4-6-thinking-latest")]
+    #[serde(
+        rename = "claude-opus-4-6-thinking",
+        alias = "claude-opus-4-6-thinking-latest"
+    )]
     ClaudeOpus4_6Thinking,
 
     // Meta Llama 4 models
@@ -273,9 +288,9 @@ impl Model {
             Self::KimiK2Thinking => "Kimi K2 Thinking",
             Self::DeepSeekR1 => "DeepSeek R1",
             Self::DeepSeekV3 => "DeepSeek V3",
-            Self::Custom { display_name, name, .. } => {
-                display_name.as_deref().unwrap_or(name.as_str())
-            }
+            Self::Custom {
+                display_name, name, ..
+            } => display_name.as_deref().unwrap_or(name.as_str()),
         }
     }
 
@@ -326,7 +341,9 @@ impl Model {
             Self::MiniMaxM2 => 16_000,
             Self::KimiK2Thinking => 16_000,
             Self::DeepSeekR1 | Self::DeepSeekV3 => 16_000,
-            Self::Custom { max_output_tokens, .. } => max_output_tokens.unwrap_or(4_096),
+            Self::Custom {
+                max_output_tokens, ..
+            } => max_output_tokens.unwrap_or(4_096),
         }
     }
 
@@ -343,7 +360,10 @@ impl Model {
             | Self::ClaudeOpus4_5Thinking
             | Self::ClaudeOpus4_6
             | Self::ClaudeOpus4_6Thinking => 1.0,
-            Self::Custom { default_temperature, .. } => default_temperature.unwrap_or(1.0),
+            Self::Custom {
+                default_temperature,
+                ..
+            } => default_temperature.unwrap_or(1.0),
             _ => 1.0,
         }
     }
@@ -381,7 +401,10 @@ impl Model {
             | Self::ClaudeOpus4_5Thinking
             | Self::ClaudeOpus4_6
             | Self::ClaudeOpus4_6Thinking => true,
-            Self::Custom { cache_configuration, .. } => cache_configuration.is_some(),
+            Self::Custom {
+                cache_configuration,
+                ..
+            } => cache_configuration.is_some(),
             _ => false,
         }
     }
@@ -405,7 +428,10 @@ impl Model {
                 max_cache_anchors: 4,
                 min_total_token: 2048,
             }),
-            Self::Custom { cache_configuration, .. } => cache_configuration.clone(),
+            Self::Custom {
+                cache_configuration,
+                ..
+            } => cache_configuration.clone(),
             _ => None,
         }
     }
@@ -814,7 +840,10 @@ mod tests {
 
         // Thinking models have different friendly IDs but same request IDs
         assert_eq!(Model::ClaudeSonnet4.id(), "claude-sonnet-4");
-        assert_eq!(Model::ClaudeSonnet4Thinking.id(), "claude-sonnet-4-thinking");
+        assert_eq!(
+            Model::ClaudeSonnet4Thinking.id(),
+            "claude-sonnet-4-thinking"
+        );
         assert_eq!(
             Model::ClaudeSonnet4.request_id(),
             Model::ClaudeSonnet4Thinking.request_id()
