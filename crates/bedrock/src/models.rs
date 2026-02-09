@@ -647,6 +647,8 @@ impl Model {
                 | Model::ClaudeSonnet4_5Thinking
                 | Model::ClaudeOpus4_5
                 | Model::ClaudeOpus4_5Thinking
+                | Model::ClaudeOpus4_6
+                | Model::ClaudeOpus4_6Thinking
         )
     }
 
