@@ -680,9 +680,14 @@ impl LanguageModel for BedrockModel {
             LanguageModelCompletionError,
         >,
     > {
-        let (region, allow_global, allow_extended_context) = cx.read_entity(&self.state, |state, _cx| {
-            (state.get_region(), state.get_allow_global(), state.get_allow_extended_context())
-        });
+        let (region, allow_global, allow_extended_context) =
+            cx.read_entity(&self.state, |state, _cx| {
+                (
+                    state.get_region(),
+                    state.get_allow_global(),
+                    state.get_allow_extended_context(),
+                )
+            });
 
         let model_id = match self.model.cross_region_inference_id(&region, allow_global) {
             Ok(s) => s,
