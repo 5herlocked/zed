@@ -725,13 +725,12 @@ impl LanguageModel for BedrockModel {
 
         let request = self.stream_completion(request, cx);
         let display_name = self.model.display_name().to_string();
-        let region = region.clone();
         let future = self.request_limiter.stream(async move {
             let response = request.await.map_err(|err| match err {
                 BedrockError::Validation(ref msg) => {
                     if msg.contains("model identifier is invalid") {
                         LanguageModelCompletionError::Other(anyhow!(
-                                "{display_name} is not available in {region}. \
+                            "{display_name} is not available in {region}. \
                                  Try switching to a region where this model is supported."
                         ))
                     } else {
@@ -1175,7 +1174,8 @@ pub fn map_to_language_model_completion_events(
     }
 
     struct State {
-        events: Pin<Box<dyn Send + Stream<Item = Result<BedrockStreamingResponse, anyhow::Error>>>>,        tool_uses_by_index: HashMap<i32, RawToolUse>,
+        events: Pin<Box<dyn Send + Stream<Item = Result<BedrockStreamingResponse, anyhow::Error>>>>,
+        tool_uses_by_index: HashMap<i32, RawToolUse>,
         emitted_tool_use: bool,
     }
 
@@ -1241,9 +1241,7 @@ pub fn map_to_language_model_completion_events(
                             }
                             None
                         }
-                        ConverseStreamOutput::MessageStart(_) => {
-                            None
-                        }
+                        ConverseStreamOutput::MessageStart(_) => None,
                         ConverseStreamOutput::ContentBlockStop(cb_stop) => state
                             .tool_uses_by_index
                             .remove(&cb_stop.content_block_index)
