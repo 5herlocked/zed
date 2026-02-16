@@ -108,8 +108,20 @@ pub enum Model {
     PixtralLarge,
 
     // Qwen models
+    #[serde(rename = "qwen3-32b")]
+    Qwen3_32B,
     #[serde(rename = "qwen3-vl-235b")]
     Qwen3VL235B,
+    #[serde(rename = "qwen3-235b")]
+    Qwen3_235B,
+    #[serde(rename = "qwen3-next-80b")]
+    Qwen3Next80B,
+    #[serde(rename = "qwen3-coder-30b")]
+    Qwen3Coder30B,
+    #[serde(rename = "qwen3-coder-next")]
+    Qwen3CoderNext,
+    #[serde(rename = "qwen3-coder-480b")]
+    Qwen3Coder480B,
 
     // Amazon Nova models
     #[serde(rename = "nova-lite")]
@@ -134,12 +146,16 @@ pub enum Model {
     // Moonshot models
     #[serde(rename = "kimi-k2-thinking")]
     KimiK2Thinking,
+    #[serde(rename = "kimi-k2-5")]
+    KimiK2_5,
 
     // DeepSeek models
     #[serde(rename = "deepseek-r1")]
     DeepSeekR1,
     #[serde(rename = "deepseek-v3")]
-    DeepSeekV3,
+    DeepSeekV3_1,
+    #[serde(rename = "deepseek-v3-2")]
+    DeepSeekV3_2,
 
     #[serde(rename = "custom")]
     Custom {
@@ -153,6 +169,10 @@ pub enum Model {
 }
 
 impl Model {
+    pub fn default_fast(_region: &str) -> Self {
+        Self::ClaudeHaiku4_5
+    }
+
     pub fn from_id(id: &str) -> anyhow::Result<Self> {
         if id.starts_with("claude-opus-4-6-thinking") {
             Ok(Self::ClaudeOpus4_6Thinking)
@@ -202,7 +222,13 @@ impl Model {
             Self::MagistralSmall => "magistral-small",
             Self::MistralLarge3 => "mistral-large-3",
             Self::PixtralLarge => "pixtral-large",
+            Self::Qwen3_32B => "qwen3-32b",
             Self::Qwen3VL235B => "qwen3-vl-235b",
+            Self::Qwen3_235B => "qwen3-235b",
+            Self::Qwen3Next80B => "qwen3-next-80b",
+            Self::Qwen3Coder30B => "qwen3-coder-30b",
+            Self::Qwen3CoderNext => "qwen3-coder-next",
+            Self::Qwen3Coder480B => "qwen3-coder-480b",
             Self::NovaLite => "nova-lite",
             Self::NovaPro => "nova-pro",
             Self::NovaPremier => "nova-premier",
@@ -211,8 +237,10 @@ impl Model {
             Self::GptOss120B => "gpt-oss-120b",
             Self::MiniMaxM2 => "minimax-m2",
             Self::KimiK2Thinking => "kimi-k2-thinking",
+            Self::KimiK2_5 => "kimi-k2-5",
             Self::DeepSeekR1 => "deepseek-r1",
-            Self::DeepSeekV3 => "deepseek-v3",
+            Self::DeepSeekV3_1 => "deepseek-v3",
+            Self::DeepSeekV3_2 => "deepseek-v3-2",
             Self::Custom { name, .. } => name,
         }
     }
@@ -242,6 +270,12 @@ impl Model {
             Self::MistralLarge3 => "mistral.mistral-large-3-675b-instruct",
             Self::PixtralLarge => "mistral.pixtral-large-2502-v1:0",
             Self::Qwen3VL235B => "qwen.qwen3-vl-235b-a22b",
+            Self::Qwen3_32B => "qwen.qwen3-32b-v1:0",
+            Self::Qwen3_235B => "qwen.qwen3-235b-a22b-2507-v1:0",
+            Self::Qwen3Next80B => "qwen.qwen3-next-80b-a3b",
+            Self::Qwen3Coder30B => "qwen.qwen3-coder-30b-a3b-v1:0",
+            Self::Qwen3CoderNext => "qwen.qwen3-coder-next",
+            Self::Qwen3Coder480B => "qwen.qwen3-coder-480b-a35b-v1:0",
             Self::NovaLite => "amazon.nova-lite-v1:0",
             Self::NovaPro => "amazon.nova-pro-v1:0",
             Self::NovaPremier => "amazon.nova-premier-v1:0",
@@ -250,8 +284,10 @@ impl Model {
             Self::GptOss120B => "openai.gpt-oss-120b-1:0",
             Self::MiniMaxM2 => "minimax.minimax-m2",
             Self::KimiK2Thinking => "moonshot.kimi-k2-thinking",
+            Self::KimiK2_5 => "moonshotai.kimi-k2.5",
             Self::DeepSeekR1 => "deepseek.r1-v1:0",
-            Self::DeepSeekV3 => "deepseek.v3-v1:0",
+            Self::DeepSeekV3_1 => "deepseek.v3-v1:0",
+            Self::DeepSeekV3_2 => "deepseek.v3.2",
             Self::Custom { name, .. } => name,
         }
     }
@@ -278,6 +314,12 @@ impl Model {
             Self::MistralLarge3 => "Mistral Large 3",
             Self::PixtralLarge => "Pixtral Large",
             Self::Qwen3VL235B => "Qwen3 VL 235B",
+            Self::Qwen3_32B => "Qwen3 32B",
+            Self::Qwen3_235B => "Qwen3 235B",
+            Self::Qwen3Next80B => "Qwen3 Next 80B",
+            Self::Qwen3Coder30B => "Qwen3 Coder 30B",
+            Self::Qwen3CoderNext => "Qwen3 Coder Next",
+            Self::Qwen3Coder480B => "Qwen3 Coder 480B",
             Self::NovaLite => "Amazon Nova Lite",
             Self::NovaPro => "Amazon Nova Pro",
             Self::NovaPremier => "Amazon Nova Premier",
@@ -286,12 +328,18 @@ impl Model {
             Self::GptOss120B => "GPT OSS 120B",
             Self::MiniMaxM2 => "MiniMax M2",
             Self::KimiK2Thinking => "Kimi K2 Thinking",
+            Self::KimiK2_5 => "Kimi K2.5",
             Self::DeepSeekR1 => "DeepSeek R1",
-            Self::DeepSeekV3 => "DeepSeek V3",
+            Self::DeepSeekV3_1 => "DeepSeek V3.1",
+            Self::DeepSeekV3_2 => "DeepSeek V3.2",
             Self::Custom {
                 display_name, name, ..
             } => display_name.as_deref().unwrap_or(name.as_str()),
         }
+    }
+
+    pub fn max_token_count(&self) -> u64 {
+        self.max_tokens()
     }
 
     pub fn max_tokens(&self) -> u64 {
@@ -310,14 +358,20 @@ impl Model {
             Self::Llama4Scout17B | Self::Llama4Maverick17B => 128_000,
             Self::Gemma3_4B | Self::Gemma3_12B | Self::Gemma3_27B => 128_000,
             Self::MagistralSmall | Self::MistralLarge3 | Self::PixtralLarge => 128_000,
-            Self::Qwen3VL235B => 128_000,
+            Self::Qwen3_32B
+            | Self::Qwen3VL235B
+            | Self::Qwen3_235B
+            | Self::Qwen3Next80B
+            | Self::Qwen3Coder30B
+            | Self::Qwen3CoderNext
+            | Self::Qwen3Coder480B => 128_000,
             Self::NovaLite | Self::NovaPro => 300_000,
             Self::NovaPremier => 1_000_000,
             Self::Nova2Lite => 300_000,
             Self::GptOss20B | Self::GptOss120B => 128_000,
             Self::MiniMaxM2 => 128_000,
-            Self::KimiK2Thinking => 128_000,
-            Self::DeepSeekR1 | Self::DeepSeekV3 => 128_000,
+            Self::KimiK2Thinking | Self::KimiK2_5 => 128_000,
+            Self::DeepSeekR1 | Self::DeepSeekV3_1 | Self::DeepSeekV3_2 => 128_000,
             Self::Custom { max_tokens, .. } => *max_tokens,
         }
     }
@@ -332,15 +386,26 @@ impl Model {
             Self::ClaudeSonnet4 | Self::ClaudeSonnet4Thinking => 64_000,
             Self::ClaudeOpus4_1 | Self::ClaudeOpus4_1Thinking => 32_000,
             Self::ClaudeOpus4_6 | Self::ClaudeOpus4_6Thinking => 128_000,
-            Self::Llama4Scout17B | Self::Llama4Maverick17B => 16_000,
-            Self::Gemma3_4B | Self::Gemma3_12B | Self::Gemma3_27B => 8_192,
-            Self::MagistralSmall | Self::MistralLarge3 | Self::PixtralLarge => 8_192,
-            Self::Qwen3VL235B => 8_192,
+            Self::Llama4Scout17B
+            | Self::Llama4Maverick17B
+            | Self::Gemma3_4B
+            | Self::Gemma3_12B
+            | Self::Gemma3_27B
+            | Self::MagistralSmall
+            | Self::MistralLarge3
+            | Self::PixtralLarge => 8_192,
+            Self::Qwen3_32B
+            | Self::Qwen3VL235B
+            | Self::Qwen3_235B
+            | Self::Qwen3Next80B
+            | Self::Qwen3Coder30B
+            | Self::Qwen3CoderNext
+            | Self::Qwen3Coder480B => 8_192,
             Self::NovaLite | Self::NovaPro | Self::NovaPremier | Self::Nova2Lite => 5_000,
             Self::GptOss20B | Self::GptOss120B => 16_000,
             Self::MiniMaxM2 => 16_000,
-            Self::KimiK2Thinking => 16_000,
-            Self::DeepSeekR1 | Self::DeepSeekV3 => 16_000,
+            Self::KimiK2Thinking | Self::KimiK2_5 => 16_000,
+            Self::DeepSeekR1 | Self::DeepSeekV3_1 | Self::DeepSeekV3_2 => 16_000,
             Self::Custom {
                 max_output_tokens, ..
             } => max_output_tokens.unwrap_or(4_096),
@@ -381,11 +446,57 @@ impl Model {
             | Self::ClaudeOpus4_5Thinking
             | Self::ClaudeOpus4_6
             | Self::ClaudeOpus4_6Thinking => true,
-            Self::Llama4Scout17B | Self::Llama4Maverick17B => true,
             Self::NovaLite | Self::NovaPro | Self::NovaPremier | Self::Nova2Lite => true,
             Self::MistralLarge3 | Self::PixtralLarge | Self::MagistralSmall => true,
+            // Gemma accepts toolConfig without error but produces unreliable tool
+            // calls -- malformed JSON args, hallucinated tool names, dropped calls.
+            Self::Qwen3_32B
+            | Self::Qwen3VL235B
+            | Self::Qwen3_235B
+            | Self::Qwen3Next80B
+            | Self::Qwen3Coder30B
+            | Self::Qwen3CoderNext
+            | Self::Qwen3Coder480B => true,
+            Self::MiniMaxM2 => true,
+            Self::KimiK2Thinking | Self::KimiK2_5 => true,
+            Self::DeepSeekR1 | Self::DeepSeekV3_1 | Self::DeepSeekV3_2 => true,
             _ => false,
         }
+    }
+
+    pub fn supports_images(&self) -> bool {
+        match self {
+            Self::ClaudeHaiku4_5
+            | Self::ClaudeSonnet4
+            | Self::ClaudeSonnet4Thinking
+            | Self::ClaudeSonnet4_5
+            | Self::ClaudeSonnet4_5Thinking
+            | Self::ClaudeOpus4_1
+            | Self::ClaudeOpus4_1Thinking
+            | Self::ClaudeOpus4_5
+            | Self::ClaudeOpus4_5Thinking
+            | Self::ClaudeOpus4_6
+            | Self::ClaudeOpus4_6Thinking => true,
+            Self::NovaLite | Self::NovaPro => true,
+            Self::PixtralLarge => true,
+            Self::Qwen3VL235B => true,
+            Self::KimiK2_5 => true,
+            _ => false,
+        }
+    }
+
+    pub fn supports_extended_context(&self) -> bool {
+        matches!(
+            self,
+            Self::ClaudeSonnet4
+                | Self::ClaudeSonnet4Thinking
+                | Self::ClaudeSonnet4_5
+                | Self::ClaudeSonnet4_5Thinking
+                | Self::ClaudeOpus4_5
+                | Self::ClaudeOpus4_5Thinking
+                | Self::ClaudeOpus4_6
+                | Self::ClaudeOpus4_6Thinking
+        )
     }
 
     pub fn supports_caching(&self) -> bool {
@@ -886,11 +997,14 @@ mod tests {
     #[test]
     fn test_supports_tool_use() {
         assert!(Model::ClaudeSonnet4_5.supports_tool_use());
-        assert!(Model::Llama4Scout17B.supports_tool_use());
         assert!(Model::NovaPro.supports_tool_use());
         assert!(Model::MistralLarge3.supports_tool_use());
         assert!(!Model::Gemma3_4B.supports_tool_use());
-        assert!(!Model::DeepSeekR1.supports_tool_use());
+        assert!(Model::Qwen3_32B.supports_tool_use());
+        assert!(Model::MiniMaxM2.supports_tool_use());
+        assert!(Model::KimiK2_5.supports_tool_use());
+        assert!(Model::DeepSeekR1.supports_tool_use());
+        assert!(!Model::Llama4Scout17B.supports_tool_use());
     }
 
     #[test]
