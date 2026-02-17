@@ -1,0 +1,19 @@
+{
+  "name": "zed-web-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "source": "index.html",
+  "scripts": {
+    "dev": "parcel serve --port 3100",
+    "build": "parcel build",
+    "clean": "rm -rf dist .parcel-cache"
+  },
+  "devDependencies": {
+    "@parcel/transformer-inline-string": "^2.16.4",
+    "@webgpu/types": "^0.1.49",
+    "parcel": "^2.15.0",
+    "parcel-reporter-static-files-copy": "^1.5.3",
+    "typescript": "^5.7.0"
+  }
+}
