@@ -185,6 +185,20 @@ impl Platform for StreamingPlatform {
         self.state.lock().active_window
     }
 
+    #[cfg(feature = "screen-capture")]
+    fn is_screen_capture_supported(&self) -> bool {
+        false
+    }
+
+    #[cfg(feature = "screen-capture")]
+    fn screen_capture_sources(
+        &self,
+    ) -> oneshot::Receiver<anyhow::Result<Vec<std::rc::Rc<dyn crate::ScreenCaptureSource>>>> {
+        let (tx, rx) = oneshot::channel();
+        let _ = tx.send(Ok(Vec::new()));
+        rx
+    }
+
     fn open_window(
         &self,
         handle: AnyWindowHandle,

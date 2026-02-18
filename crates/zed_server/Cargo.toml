@@ -16,14 +16,30 @@ name = "zed_server"
 anyhow.workspace = true
 bytes = "1"
 clap.workspace = true
+client.workspace = true
+editor.workspace = true
 env_logger.workspace = true
+fs.workspace = true
 futures.workspace = true
+git.workspace = true
+git_hosting_providers.workspace = true
 gpui = { workspace = true, features = ["headless-web", "font-kit"] }
 gpui_tokio.workspace = true
+language.workspace = true
 log.workspace = true
+node_runtime.workspace = true
+paths.workspace = true
 postcard = { version = "1", features = ["alloc"] }
+project.workspace = true
+release_channel.workspace = true
+reqwest_client.workspace = true
+semver.workspace = true
 serde_json.workspace = true
+session = { workspace = true, features = ["test-support"] }
 settings.workspace = true
 smol.workspace = true
+theme.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-tungstenite.workspace = true
+watch.workspace = true
+workspace.workspace = true

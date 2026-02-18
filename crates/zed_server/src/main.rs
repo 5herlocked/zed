@@ -3,15 +3,17 @@ use bytes::Bytes;
 use clap::Parser;
 use futures::stream::StreamExt;
 use futures::{SinkExt, TryStreamExt};
-use gpui::display_tree::DisplayTree;
-use gpui::prelude::*;
-use gpui::{div, px, rgb, Application, Context, Render, StreamingConfig, Window, WindowOptions};
+use git::GitHostingProviderRegistry;
+use gpui::{AppContext as _, display_tree::DisplayTree};
+use gpui::{Application, StreamingConfig};
+use language::LanguageRegistry;
 use log::{error, info};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::watch as tokio_watch;
 use tokio_tungstenite::tungstenite::Message;
+use workspace::AppState;
 
 #[derive(Parser)]
 #[command(name = "zed_server", about = "Zed Web streaming server")]
@@ -46,48 +48,94 @@ fn main() -> Result<()> {
     let (app, frame_rx) = Application::streaming(config);
 
     let bind_addr = args.bind;
-    let (broadcast_tx, _) = broadcast::channel::<Bytes>(16);
+    // Watch channel holds the latest frame -- new clients get it immediately.
+    let (frame_watch_tx, frame_watch_rx) = tokio_watch::channel(Bytes::new());
 
     app.run(move |cx| {
-        settings::init(cx);
+        // ── 1. Core infrastructure ──────────────────────────────────────
+        release_channel::init(semver::Version::new(0, 1, 0), cx);
         gpui_tokio::init(cx);
+        settings::init(cx);
 
-        let window = cx
-            .open_window(WindowOptions::default(), |_window, cx| {
-                cx.new(|_cx| ServerView { frame_count: 0 })
-            })
-            .expect("failed to open streaming window");
+        // ── 2. HTTP client ──────────────────────────────────────────────
+        let http = {
+            let _guard = gpui_tokio::Tokio::handle(cx).enter();
+            reqwest_client::ReqwestClient::proxy_and_user_agent(None, "ZedServer/0.1.0")
+                .expect("could not start HTTP client")
+        };
+        cx.set_http_client(Arc::new(http));
 
-        // Drive the render loop at ~30fps. Each tick bumps the frame counter,
-        // notifies GPUI the view is dirty, which triggers Window::draw() ->
-        // DisplayTree capture -> frame_tx.
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |cx| {
-            loop {
-                executor.timer(Duration::from_millis(33)).await;
-                cx.update(|cx| {
-                    window
-                        .update(cx, |view, _window, cx| {
-                            view.frame_count += 1;
-                            cx.notify();
-                        })
-                        .ok();
-                });
-            }
-        })
+        // ── 3. Filesystem ───────────────────────────────────────────────
+        let fs = Arc::new(fs::RealFs::new(None, cx.background_executor().clone()));
+        <dyn fs::Fs>::set_global(fs.clone(), cx);
+
+        // ── 4. Git hosting ──────────────────────────────────────────────
+        GitHostingProviderRegistry::default_global(cx);
+        git_hosting_providers::init(cx);
+
+        // ── 5. Client (disconnected -- no auth, just satisfies AppState) ─
+        let client = client::Client::production(cx);
+        client::Client::set_global(client.clone(), cx);
+
+        // ── 6. Language registry (empty -- no built-in languages) ────────
+        let mut languages = LanguageRegistry::new(cx.background_executor().clone());
+        languages.set_language_server_download_dir(paths::languages_dir().clone());
+        let languages = Arc::new(languages);
+
+        // ── 7. Node runtime (minimal, no shell env) ─────────────────────
+        let (_, node_options_rx) = watch::channel(None);
+        let node_runtime = node_runtime::NodeRuntime::new(
+            client.http_client().clone(),
+            None,
+            node_options_rx,
+        );
+
+        // ── 8. Entity stores ────────────────────────────────────────────
+        let user_store = cx.new(|cx| client::UserStore::new(client.clone(), cx));
+        let workspace_store = cx.new(|cx| workspace::WorkspaceStore::new(client.clone(), cx));
+
+        // ── 9. Session (test mode -- no SQLite DB needed) ───────────────
+        let session = session::Session::test();
+        let app_session = cx.new(|cx| session::AppSession::new(session, cx));
+
+        // ── 10. AppState ────────────────────────────────────────────────
+        let app_state = Arc::new(AppState {
+            languages,
+            client: client.clone(),
+            user_store,
+            fs: fs.clone(),
+            build_window_options: |_, _| gpui::WindowOptions::default(),
+            workspace_store,
+            node_runtime,
+            session: app_session,
+        });
+        AppState::set_global(Arc::downgrade(&app_state), cx);
+
+        // ── 11. Theme (base only -- no embedded assets) ─────────────────
+        theme::init(theme::LoadThemes::JustBase, cx);
+
+        // ── 12. Core crate init (order matters) ─────────────────────────
+        project::Project::init(&client, cx);
+        client::init(&client, cx);
+        editor::init(cx);
+        workspace::init(app_state.clone(), cx);
+
+        // ── 13. Open an empty workspace ─────────────────────────────────
+        workspace::open_new(
+            Default::default(),
+            app_state.clone(),
+            cx,
+            |_workspace, _window, _cx| {},
+        )
         .detach();
 
+        // ── 14. Frame bridge + WebSocket server ─────────────────────────
         let tokio = gpui_tokio::Tokio::handle(cx).clone();
-        let btx = broadcast_tx.clone();
+        tokio.spawn(frame_bridge(frame_rx, frame_watch_tx));
 
-        // Bridge: read DisplayTree frames from GPUI's smol channel,
-        // serialize as WireFrame::Snapshot, broadcast to all WebSocket clients.
-        tokio.spawn(frame_bridge(frame_rx, btx));
-
-        // WebSocket server accepting browser clients.
-        let btx2 = broadcast_tx.clone();
+        let watch_rx = frame_watch_rx;
         tokio.spawn(async move {
-            if let Err(e) = run_websocket_server(bind_addr, btx2).await {
+            if let Err(e) = run_websocket_server(bind_addr, watch_rx).await {
                 error!("WebSocket server error: {e:#}");
             }
         });
@@ -98,66 +146,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Root view for the streaming server. Renders a minimal UI that proves
-/// the capture pipeline works end-to-end. Will be replaced with a real
-/// Zed workspace once the full init chain is wired up.
-struct ServerView {
-    frame_count: usize,
-}
-
-impl Render for ServerView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(rgb(0x1a1b26))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(px(16.0))
-            .child(
-                div()
-                    .text_color(rgb(0x7aa2f7))
-                    .text_size(px(32.0))
-                    .child("Zed Web Server"),
-            )
-            .child(
-                div()
-                    .text_color(rgb(0x565f89))
-                    .text_size(px(16.0))
-                    .child(format!("Frame {}", self.frame_count)),
-            )
-            .child(
-                div()
-                    .mt(px(32.0))
-                    .px(px(24.0))
-                    .py(px(12.0))
-                    .rounded(px(8.0))
-                    .bg(rgb(0x24283b))
-                    .border_1()
-                    .border_color(rgb(0x414868))
-                    .child(
-                        div()
-                            .text_color(rgb(0x9ece6a))
-                            .text_size(px(14.0))
-                            .child("Pipeline: capture -> serialize -> WebSocket -> browser"),
-                    ),
-            )
-    }
-}
-
-/// Reads DisplayTree frames from GPUI's smol channel and broadcasts
-/// serialized WireFrame::Snapshot bytes to all connected clients.
+/// Reads DisplayTree frames from GPUI's smol channel and publishes
+/// the latest serialized JSON to the watch channel.
 async fn frame_bridge(
     frame_rx: smol::channel::Receiver<DisplayTree>,
-    broadcast_tx: broadcast::Sender<Bytes>,
+    watch_tx: tokio_watch::Sender<Bytes>,
 ) {
     loop {
         match frame_rx.recv().await {
             Ok(tree) => {
                 match serde_json::to_vec(&tree) {
                     Ok(json) => {
-                        let _ = broadcast_tx.send(Bytes::from(json));
+                        let _ = watch_tx.send(Bytes::from(json));
                     }
                     Err(e) => error!("frame serialization failed: {e}"),
                 }
@@ -170,10 +170,10 @@ async fn frame_bridge(
     }
 }
 
-/// Accepts WebSocket connections and forwards broadcast frames to each client.
+/// Accepts WebSocket connections and sends the latest frame + future frames.
 async fn run_websocket_server(
     addr: SocketAddr,
-    broadcast_tx: broadcast::Sender<Bytes>,
+    watch_rx: tokio_watch::Receiver<Bytes>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!("WebSocket server bound to {addr}");
@@ -181,16 +181,16 @@ async fn run_websocket_server(
     loop {
         let (stream, peer) = listener.accept().await?;
         info!("new connection from {peer}");
-        let rx = broadcast_tx.subscribe();
+        let rx = watch_rx.clone();
         tokio::spawn(handle_client(stream, peer, rx));
     }
 }
 
-/// Handles a single WebSocket client: sends frames, receives actions.
+/// Handles a single WebSocket client: sends current + future frames.
 async fn handle_client(
     stream: TcpStream,
     peer: SocketAddr,
-    mut frame_rx: broadcast::Receiver<Bytes>,
+    mut watch_rx: tokio_watch::Receiver<Bytes>,
 ) {
     let ws = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
@@ -202,10 +202,29 @@ async fn handle_client(
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
+    // Send the latest frame immediately (if available).
+    {
+        let current = watch_rx.borrow().clone();
+        if !current.is_empty() {
+            if ws_tx
+                .send(Message::Binary(current.into()))
+                .await
+                .is_err()
+            {
+                info!("{peer} disconnected during initial send");
+                return;
+            }
+        }
+    }
+
     let peer_send = peer;
     let send_task = tokio::spawn(async move {
-        while let Ok(bytes) = frame_rx.recv().await {
-            if ws_tx.send(Message::Binary(bytes.into())).await.is_err() {
+        while watch_rx.changed().await.is_ok() {
+            let frame = watch_rx.borrow().clone();
+            if frame.is_empty() {
+                continue;
+            }
+            if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
                 break;
             }
         }
