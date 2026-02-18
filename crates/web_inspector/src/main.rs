@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_tungstenite::tungstenite::Message;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use rpc::proto::{Envelope, envelope::Payload};
@@ -10,7 +10,10 @@ use smol::net::TcpStream;
 #[derive(Parser)]
 #[command(name = "web_inspector", about = "Inspect WebSocket proto messages from Zed's remote server")]
 struct Args {
-    /// WebSocket URL to connect to
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// WebSocket URL to connect to (for default listen mode)
     #[arg(short, long, default_value = "ws://localhost:8080")]
     url: String,
 
@@ -21,6 +24,16 @@ struct Args {
     /// Show full payload details
     #[arg(short, long)]
     verbose: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the web inspector HTML page on an HTTP port
+    Serve {
+        /// HTTP port to serve the inspector page on
+        #[arg(short, long, default_value = "8081")]
+        port: u16,
+    },
 }
 
 fn payload_type_name(payload: &Payload) -> &'static str {
@@ -39,6 +52,7 @@ fn payload_type_name(payload: &Payload) -> &'static str {
         Payload::UpdateWorktreeSettings(_) => "UpdateWorktreeSettings",
         Payload::CreateBufferForPeer(_) => "CreateBufferForPeer",
         Payload::UpdateBuffer(_) => "UpdateBuffer",
+        Payload::UpdateDiagnosticSummary(_) => "UpdateDiagnosticSummary",
         Payload::OpenBufferByPath(_) => "OpenBufferByPath",
         Payload::OpenBufferResponse(_) => "OpenBufferResponse",
         _ => "Unknown",
@@ -68,13 +82,69 @@ fn payload_summary(payload: &Payload) -> serde_json::Value {
             "project_id": update.project_id,
             "buffer_id": update.buffer_id,
         }),
+        Payload::UpdateDiagnosticSummary(update) => json!({
+            "project_id": update.project_id,
+            "worktree_id": update.worktree_id,
+        }),
         _ => json!({}),
     }
 }
 
+const INSPECTOR_HTML: &str = include_str!("../static/inspector.html");
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    match args.command {
+        Some(Command::Serve { port }) => serve_inspector(port),
+        None => listen_cli(args),
+    }
+}
+
+fn serve_inspector(port: u16) -> Result<()> {
+    smol::block_on(async {
+        let listener = smol::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+            .await
+            .context(format!("failed to bind HTTP server on port {port}"))?;
+
+        eprintln!("Inspector page: http://localhost:{port}");
+
+        loop {
+            let (stream, addr) = listener.accept().await?;
+            smol::spawn(async move {
+                if let Err(error) = handle_http_request(stream).await {
+                    eprintln!("HTTP error from {addr}: {error:?}");
+                }
+            })
+            .detach();
+        }
+    })
+}
+
+async fn handle_http_request(mut stream: smol::net::TcpStream) -> Result<()> {
+    use smol::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await?;
+    let request = String::from_utf8_lossy(&buf[..n]);
+
+    let (status, content_type, body) = if request.starts_with("GET / ")
+        || request.starts_with("GET /inspector")
+    {
+        ("200 OK", "text/html; charset=utf-8", INSPECTOR_HTML)
+    } else {
+        ("404 Not Found", "text/plain", "Not found")
+    };
+
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    stream.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
+fn listen_cli(args: Args) -> Result<()> {
     smol::block_on(async {
         let url = &args.url;
         let host_port = url

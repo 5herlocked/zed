@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zed WebSocket Inspector</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #181825;
+    --overlay: #313244;
+    --text: #cdd6f4;
+    --subtext: #a6adc8;
+    --blue: #89b4fa;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --mauve: #cba6f7;
+    --teal: #94e2d5;
+    --peach: #fab387;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--overlay);
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--blue);
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  input, select {
+    background: var(--overlay);
+    border: 1px solid transparent;
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--blue);
+  }
+  button {
+    background: var(--blue);
+    color: var(--bg);
+    border: none;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary {
+    background: var(--overlay);
+    color: var(--text);
+  }
+  button.danger {
+    background: var(--red);
+  }
+  .stats {
+    margin-left: auto;
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--subtext);
+  }
+  .stats .value {
+    color: var(--green);
+    font-weight: 600;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--overlay);
+  }
+  .status-dot.connected { background: var(--green); }
+  .status-dot.error { background: var(--red); }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .msg-row {
+    display: grid;
+    grid-template-columns: 50px 60px 180px 50px 1fr;
+    gap: 8px;
+    padding: 3px 16px;
+    align-items: baseline;
+    border-bottom: 1px solid rgba(49, 50, 68, 0.4);
+    cursor: pointer;
+  }
+  .msg-row:hover { background: var(--surface); }
+  .msg-row.expanded { background: var(--surface); }
+  .msg-seq { color: var(--subtext); text-align: right; }
+  .msg-id { color: var(--mauve); }
+  .msg-type { font-weight: 600; }
+  .msg-type.Hello { color: var(--green); }
+  .msg-type.UpdateWorktree { color: var(--blue); }
+  .msg-type.CreateBufferForPeer { color: var(--teal); }
+  .msg-type.UpdateBuffer { color: var(--peach); }
+  .msg-type.UpdateDiagnosticSummary { color: var(--yellow); }
+  .msg-type.Error { color: var(--red); }
+  .msg-type.Ack { color: var(--subtext); }
+  .msg-type.Ping { color: var(--subtext); }
+  .msg-type.Other { color: var(--subtext); }
+  .msg-bytes { color: var(--subtext); text-align: right; }
+  .msg-summary { color: var(--subtext); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg-detail {
+    display: none;
+    grid-column: 1 / -1;
+    padding: 8px 12px;
+    margin: 4px 0;
+    background: var(--bg);
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-size: 11px;
+    color: var(--subtext);
+  }
+  .msg-row.expanded .msg-detail { display: block; }
+  .table-header {
+    display: grid;
+    grid-template-columns: 50px 60px 180px 50px 1fr;
+    gap: 8px;
+    padding: 6px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--subtext);
+    background: var(--surface);
+    border-bottom: 1px solid var(--overlay);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .table-header span:nth-child(1),
+  .table-header span:nth-child(4) { text-align: right; }
+  .empty-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--subtext);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="status-dot" id="statusDot"></div>
+  <h1>Zed WebSocket Inspector</h1>
+  <div class="controls">
+    <input id="urlInput" type="text" value="ws://localhost:8080" placeholder="ws://host:port" style="width:200px">
+    <button id="connectBtn" onclick="toggleConnection()">Connect</button>
+    <select id="filterType" onchange="applyFilter()">
+      <option value="">All types</option>
+      <option value="Hello">Hello</option>
+      <option value="UpdateWorktree">UpdateWorktree</option>
+      <option value="CreateBufferForPeer">CreateBufferForPeer</option>
+      <option value="UpdateBuffer">UpdateBuffer</option>
+      <option value="UpdateDiagnosticSummary">UpdateDiagnosticSummary</option>
+      <option value="Ack">Ack</option>
+      <option value="Error">Error</option>
+      <option value="Other">Other</option>
+    </select>
+    <button class="secondary" onclick="clearMessages()">Clear</button>
+  </div>
+  <div class="stats">
+    <span>Messages: <span class="value" id="msgCount">0</span></span>
+    <span>Bytes: <span class="value" id="byteCount">0</span></span>
+    <span>Rate: <span class="value" id="msgRate">0</span>/s</span>
+  </div>
+</header>
+<div class="table-header">
+  <span>#</span>
+  <span>ID</span>
+  <span>Type</span>
+  <span>Size</span>
+  <span>Summary</span>
+</div>
+<div id="messages">
+  <div class="empty-state" id="emptyState">Connect to a Zed server to start inspecting messages</div>
+</div>
+
+<script>
+  let messages = [];
+  let totalBytes = 0;
+  let connected = false;
+  let ws = null;
+  let rateWindow = [];
+  let autoScroll = true;
+
+  const msgContainer = document.getElementById('messages');
+  const emptyState = document.getElementById('emptyState');
+
+  // Track scroll position to auto-scroll only when at bottom
+  msgContainer.addEventListener('scroll', () => {
+    const threshold = 50;
+    autoScroll = msgContainer.scrollHeight - msgContainer.scrollTop - msgContainer.clientHeight < threshold;
+  });
+
+  function toggleConnection() {
+    if (connected) {
+      disconnect();
+    } else {
+      connectWs();
+    }
+  }
+
+  function connectWs() {
+    const url = document.getElementById('urlInput').value;
+    try {
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+    } catch (e) {
+      setStatus('error');
+      return;
+    }
+
+    ws.onopen = () => {
+      connected = true;
+      setStatus('connected');
+      document.getElementById('connectBtn').textContent = 'Disconnect';
+      emptyState.style.display = 'none';
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        // Raw binary — we can't decode protobuf in pure JS without a library,
+        // so we show raw hex and basic frame info.
+        const data = new Uint8Array(event.data);
+        const byteLen = data.length;
+        totalBytes += byteLen;
+
+        // Attempt minimal varint-based Envelope parsing:
+        // Envelope fields: id (field 1, varint), responding_to (field 2, varint),
+        // payload (field 3+, length-delimited oneof)
+        const parsed = parseEnvelopeMinimal(data);
+
+        const seq = messages.length + 1;
+        const msg = {
+          seq,
+          id: parsed.id,
+          responding_to: parsed.respondingTo,
+          type: parsed.typeName,
+          bytes: byteLen,
+          summary: parsed.summary,
+          hex: bytesToHex(data.slice(0, Math.min(256, data.length))),
+          timestamp: new Date().toISOString(),
+        };
+        messages.push(msg);
+        rateWindow.push(Date.now());
+
+        addMessageRow(msg);
+        updateStats();
+      }
+    };
+
+    ws.onerror = () => { setStatus('error'); };
+    ws.onclose = () => {
+      connected = false;
+      setStatus('');
+      document.getElementById('connectBtn').textContent = 'Connect';
+    };
+  }
+
+  function disconnect() {
+    if (ws) { ws.close(); ws = null; }
+    connected = false;
+    setStatus('');
+    document.getElementById('connectBtn').textContent = 'Connect';
+  }
+
+  function setStatus(state) {
+    const dot = document.getElementById('statusDot');
+    dot.className = 'status-dot' + (state ? ' ' + state : '');
+  }
+
+  // Minimal protobuf varint parser for Envelope header fields.
+  // Envelope: id=1(varint), responding_to=2(varint), original_sender_id=3(message),
+  // ack_id=266(varint), payload=oneof(4+, length-delimited)
+  function parseEnvelopeMinimal(data) {
+    let offset = 0;
+    let id = 0;
+    let respondingTo = null;
+    let payloadFieldNumber = 0;
+
+    function readVarint() {
+      let result = 0;
+      let shift = 0;
+      while (offset < data.length) {
+        const byte = data[offset++];
+        result |= (byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) break;
+        shift += 7;
+        if (shift > 35) break;
+      }
+      return result;
+    }
+
+    while (offset < data.length) {
+      const tag = readVarint();
+      const fieldNumber = tag >>> 3;
+      const wireType = tag & 0x7;
+
+      if (wireType === 0) {
+        const value = readVarint();
+        if (fieldNumber === 1) id = value;
+        else if (fieldNumber === 2) respondingTo = value;
+      } else if (wireType === 2) {
+        const len = readVarint();
+        // Field 3 is original_sender_id (PeerId message), skip it.
+        // Fields 4+ in the oneof are the payload.
+        if (fieldNumber >= 4) {
+          payloadFieldNumber = fieldNumber;
+        }
+        offset += len;
+      } else if (wireType === 5) {
+        offset += 4; // 32-bit
+      } else if (wireType === 1) {
+        offset += 8; // 64-bit
+      } else {
+        break;
+      }
+    }
+
+    const typeName = fieldNumberToTypeName(payloadFieldNumber);
+    return { id, respondingTo, typeName, summary: '' };
+  }
+
+  // Map Envelope oneof field numbers to type names.
+  // These correspond to the field numbers in zed.proto's Envelope message.
+  function fieldNumberToTypeName(fieldNumber) {
+    const map = {
+      4: 'Hello',
+      5: 'Ack',
+      6: 'Error',
+      7: 'Ping',
+      8: 'Test',
+      165: 'EndStream',
+      9: 'CreateRoom',
+      10: 'CreateRoomResponse',
+      11: 'JoinRoom',
+      12: 'JoinRoomResponse',
+      13: 'RejoinRoom',
+      14: 'RejoinRoomResponse',
+      15: 'LeaveRoom',
+      16: 'Call',
+      17: 'IncomingCall',
+      18: 'CallCanceled',
+      19: 'CancelCall',
+      20: 'DeclineCall',
+      21: 'UpdateParticipantLocation',
+      22: 'RoomUpdated',
+      23: 'ShareProject',
+      24: 'ShareProjectResponse',
+      25: 'UnshareProject',
+      26: 'JoinProject',
+      27: 'JoinProjectResponse',
+      28: 'LeaveProject',
+      29: 'AddProjectCollaborator',
+      30: 'UpdateProjectCollaborator',
+      31: 'RemoveProjectCollaborator',
+      32: 'GetDefinition',
+      33: 'GetDefinitionResponse',
+      34: 'GetTypeDefinition',
+      35: 'GetTypeDefinitionResponse',
+      36: 'GetReferences',
+      37: 'GetReferencesResponse',
+      38: 'GetDocumentHighlights',
+      39: 'GetDocumentHighlightsResponse',
+      40: 'GetProjectSymbols',
+      41: 'GetProjectSymbolsResponse',
+      44: 'UpdateProject',
+      45: 'UpdateWorktree',
+      46: 'CreateProjectEntry',
+      47: 'RenameProjectEntry',
+      48: 'CopyProjectEntry',
+      49: 'DeleteProjectEntry',
+      50: 'ProjectEntryResponse',
+      53: 'UpdateDiagnosticSummary',
+      54: 'StartLanguageServer',
+      55: 'UpdateLanguageServer',
+      56: 'OpenBufferById',
+      57: 'OpenBufferByPath',
+      58: 'OpenBufferResponse',
+      59: 'CreateBufferForPeer',
+      60: 'UpdateBuffer',
+      61: 'UpdateBufferFile',
+      62: 'SaveBuffer',
+      63: 'BufferSaved',
+      64: 'BufferReloaded',
+      71: 'GetCompletions',
+      72: 'GetCompletionsResponse',
+      77: 'GetCodeActions',
+      78: 'GetCodeActionsResponse',
+      79: 'GetHover',
+      80: 'GetHoverResponse',
+      81: 'ApplyCodeAction',
+      82: 'ApplyCodeActionResponse',
+    };
+    return map[fieldNumber] || ('Field_' + fieldNumber);
+  }
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  function addMessageRow(msg) {
+    const filter = document.getElementById('filterType').value;
+    const row = document.createElement('div');
+    row.className = 'msg-row';
+    row.dataset.type = msg.type;
+    if (filter && msg.type !== filter) {
+      row.style.display = 'none';
+    }
+    row.innerHTML = `
+      <span class="msg-seq">${msg.seq}</span>
+      <span class="msg-id">${msg.id}</span>
+      <span class="msg-type ${msg.type}">${msg.type}</span>
+      <span class="msg-bytes">${msg.bytes}B</span>
+      <span class="msg-summary">${msg.summary || msg.timestamp}</span>
+      <div class="msg-detail">${msg.hex}${msg.hex.length >= 256*3 ? '\n...(truncated)' : ''}</div>
+    `;
+    row.addEventListener('click', () => row.classList.toggle('expanded'));
+    msgContainer.appendChild(row);
+
+    if (autoScroll) {
+      msgContainer.scrollTop = msgContainer.scrollHeight;
+    }
+  }
+
+  function updateStats() {
+    document.getElementById('msgCount').textContent = messages.length;
+    document.getElementById('byteCount').textContent = formatBytes(totalBytes);
+
+    const now = Date.now();
+    rateWindow = rateWindow.filter(t => now - t < 1000);
+    document.getElementById('msgRate').textContent = rateWindow.length;
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+  }
+
+  function applyFilter() {
+    const filter = document.getElementById('filterType').value;
+    const rows = msgContainer.querySelectorAll('.msg-row');
+    rows.forEach(row => {
+      if (!filter || row.dataset.type === filter) {
+        row.style.display = '';
+      } else {
+        row.style.display = 'none';
+      }
+    });
+  }
+
+  function clearMessages() {
+    messages = [];
+    totalBytes = 0;
+    rateWindow = [];
+    msgContainer.innerHTML = '';
+    updateStats();
+    if (!connected) {
+      msgContainer.innerHTML = '<div class="empty-state">Connect to a Zed server to start inspecting messages</div>';
+    }
+  }
+
+  // Update rate counter every second
+  setInterval(updateStats, 1000);
+</script>
+</body>
+</html>
