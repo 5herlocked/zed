@@ -179,7 +179,7 @@ impl Application {
     /// Returns (AppContext, frame_rx) where frame_rx receives a `DisplayTree`
     /// after every render frame. The caller (zed_web server) reads from
     /// frame_rx, serializes, and ships over WebSocket.
-    #[cfg(feature = "headless-web")]
+    #[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]
     pub fn streaming(
         config: crate::StreamingConfig,
     ) -> (Self, smol::channel::Receiver<crate::display_tree::DisplayTree>) {

@@ -26,7 +26,7 @@ mod visual_test;
 #[cfg(target_os = "windows")]
 mod windows;
 
-#[cfg(feature = "headless-web")]
+#[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]
 mod streaming;
 
 #[cfg(all(
@@ -98,7 +98,7 @@ pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream}
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
 pub use visual_test::VisualTestPlatform;
 
-#[cfg(feature = "headless-web")]
+#[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]
 pub use streaming::{StreamingConfig, StreamingPlatform, StreamingWindow};
 
 /// Returns a background executor for the current platform.

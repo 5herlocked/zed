@@ -1,0 +1,40 @@
+[package]
+name = "zed_web"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "Browser client for Zed's web streaming architecture"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+gpui = { path = "../gpui", features = ["web", "headless-web"], default-features = false }
+log.workspace = true
+serde.workspace = true
+
+console_error_panic_hook = "0.1"
+console_log = "1"
+js-sys = "0.3"
+postcard = { version = "1", features = ["alloc"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "Blob",
+    "CloseEvent",
+    "Document",
+    "Element",
+    "ErrorEvent",
+    "HtmlElement",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+] }

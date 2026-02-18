@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Zed Web</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1b26; }
+        #status {
+            position: fixed; top: 12px; left: 12px;
+            font: 13px/1.4 'SF Mono', 'Fira Code', monospace;
+            color: #565f89; z-index: 1000;
+        }
+        #status.connected { color: #9ece6a; }
+        #status.error { color: #f7768e; }
+    </style>
+</head>
+<body>
+    <div id="status">loading wasm...</div>
+    <script type="module">
+        import init, { launch } from './pkg/zed_web.js';
+
+        const status = document.getElementById('status');
+
+        async function run() {
+            try {
+                status.textContent = 'initializing...';
+                await init();
+
+                const ws_url = new URLSearchParams(location.search).get('server')
+                    || 'ws://localhost:8080/stream';
+
+                status.textContent = `connecting to ${ws_url}`;
+                launch(ws_url);
+
+                status.textContent = 'connected';
+                status.className = 'connected';
+
+                setTimeout(() => { status.style.opacity = '0'; }, 2000);
+            } catch (e) {
+                status.textContent = `error: ${e}`;
+                status.className = 'error';
+                console.error(e);
+            }
+        }
+
+        run();
+    </script>
+</body>
+</html>

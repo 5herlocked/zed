@@ -212,6 +212,7 @@ members = [
     "crates/zed",
     "crates/zed_actions",
     "crates/zed_env_vars",
+    "crates/zed_web",
     "crates/edit_prediction_cli",
     "crates/zeta_prompt",
     "crates/zlog",
