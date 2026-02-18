@@ -65,6 +65,10 @@ x11 = [
 screen-capture = [
     "scap",
 ]
+web-streaming = [
+    "async-tungstenite",
+    "prost",
+]
 windows-manifest = []
 
 [lib]
@@ -74,6 +78,8 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 async-task = "4.7"
+async-tungstenite = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
 backtrace = { workspace = true, optional = true }
 bitflags = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true }
@@ -241,6 +247,9 @@ windows-registry = "0.5"
 bindgen = "0.71"
 cbindgen = { version = "0.28.0", default-features = false }
 naga.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies]
 naga.workspace = true

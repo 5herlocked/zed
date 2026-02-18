@@ -443,8 +443,8 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
         }
         case 2u: {
             let gradient_angle_or_pattern_height = background.gradient_angle_or_pattern_height;
-            let pattern_width = (gradient_angle_or_pattern_height / 65535.0f) / 255.0f;
-            let pattern_interval = (gradient_angle_or_pattern_height % 65535.0f) / 255.0f;
+            let pattern_width = (gradient_angle_or_pattern_height / 65535.0) / 255.0;
+            let pattern_interval = (gradient_angle_or_pattern_height % 65535.0) / 255.0;
             let pattern_height = pattern_width + pattern_interval;
             let stripe_angle = M_PI_F / 4.0;
             let pattern_period = pattern_height * sin(stripe_angle);
@@ -455,7 +455,7 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
             let relative_position = position - bounds.origin;
             let rotated_point = rotation * relative_position;
             let pattern = rotated_point.x % pattern_period;
-            let distance = min(pattern, pattern_period - pattern) - pattern_period * (pattern_width / pattern_height) / 2.0f;
+            let distance = min(pattern, pattern_period - pattern) - pattern_period * (pattern_width / pattern_height) / 2.0;
             background_color = solid_color;
             background_color.a *= saturate(0.5 - distance);
         }
@@ -859,7 +859,7 @@ struct PathRasterizationVertex {
 struct PathRasterizationVarying {
     @builtin(position) position: vec4<f32>,
     @location(0) st_position: vec2<f32>,
-    @location(1) vertex_id: u32,
+    @location(1) @interpolate(flat) vertex_id: u32,
     @location(3) clip_distances: vec4<f32>,
 }
 

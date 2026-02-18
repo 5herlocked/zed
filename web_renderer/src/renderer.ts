@@ -10,6 +10,9 @@
 // @builtin(instance_index). Vertices are generated from vertex_index (a unit
 // quad: 4 vertices, 6 indices via triangle strip with degenerate handling, or
 // simply 2 triangles from 4 verts indexed 0-1-2, 2-1-3).
+//
+// Diagnostics: set window.__ZED_RENDERER_DEBUG = true in the console to
+// enable per-frame logging of atlas tile misses and draw call stats.
 
 import { Atlas } from "./atlas";
 import {
@@ -32,6 +35,45 @@ import {
   TransformationMatrix,
   AtlasTile,
 } from "./protocol";
+
+// Convert HSLA to linear RGBA, matching the WGSL hsla_to_rgba function.
+// Used for the clear color so the canvas background matches the theme.
+function hslaToRgba(hsla: Hsla): { r: number; g: number; b: number; a: number } {
+  const h = hsla.h * 6.0;
+  const s = hsla.s;
+  const l = hsla.l;
+  const a = hsla.a;
+
+  const c = (1.0 - Math.abs(2.0 * l - 1.0)) * s;
+  const x = c * (1.0 - Math.abs((h % 2.0) - 1.0));
+  const m = l - c / 2.0;
+
+  let r = m,
+    g = m,
+    b = m;
+
+  if (h >= 0 && h < 1) {
+    r += c;
+    g += x;
+  } else if (h >= 1 && h < 2) {
+    r += x;
+    g += c;
+  } else if (h >= 2 && h < 3) {
+    g += c;
+    b += x;
+  } else if (h >= 3 && h < 4) {
+    g += x;
+    b += c;
+  } else if (h >= 4 && h < 5) {
+    r += x;
+    b += c;
+  } else {
+    r += c;
+    b += x;
+  }
+
+  return { r, g, b, a };
+}
 import shaderSource from "./shaders.wgsl";
 
 // ---------------------------------------------------------------------------
@@ -124,6 +166,10 @@ export interface Batch {
   textureId?: AtlasTextureId;
 }
 
+function isDebug(): boolean {
+  return !!(globalThis as Record<string, unknown>).__ZED_RENDERER_DEBUG;
+}
+
 export class Renderer {
   private device: GPUDevice;
   private context: GPUCanvasContext;
@@ -157,7 +203,7 @@ export class Renderer {
     this.context.configure({
       device: this.device,
       format: this.canvasFormat,
-      alphaMode: "premultiplied",
+      alphaMode: "opaque",
     });
 
     // Create globals uniform buffers
@@ -238,17 +284,92 @@ export class Renderer {
 
     // Update globals
     const scaleFactor = frame.scale_factor;
-    const vpWidth = frame.viewport_size.width * scaleFactor;
-    const vpHeight = frame.viewport_size.height * scaleFactor;
+    const vpWidth = frame.viewport_size.width;
+    const vpHeight = frame.viewport_size.height;
 
     if (Math.floor(vpWidth) !== this.viewportWidth || Math.floor(vpHeight) !== this.viewportHeight) {
-      this.resize(frame.viewport_size.width, frame.viewport_size.height, scaleFactor);
+      this.resize(frame.viewport_size.width / scaleFactor, frame.viewport_size.height / scaleFactor, scaleFactor);
     }
 
     this.writeGlobals(vpWidth, vpHeight);
 
+    // Use pre-computed theme hints from the Rust side for the background color.
+    // This bypasses the JS HSLA-to-RGBA conversion entirely, using GPUI's own
+    // color conversion which we know is correct.
+    let clearColor: { r: number; g: number; b: number; a: number };
+    if (frame.theme_hints?.background_css) {
+      // Parse the hex CSS color from Rust (e.g., "#1e1e2e")
+      const hex = frame.theme_hints.background_rgb;
+      clearColor = {
+        r: ((hex >> 16) & 0xff) / 255,
+        g: ((hex >> 8) & 0xff) / 255,
+        b: (hex & 0xff) / 255,
+        a: 1,
+      };
+      document.body.style.backgroundColor = frame.theme_hints.background_css;
+    } else if (frame.background_color) {
+      // Fallback: convert HSLA in JS
+      const rgba = hslaToRgba(frame.background_color);
+      clearColor = { r: rgba.r, g: rgba.g, b: rgba.b, a: 1 };
+      const r8 = Math.round(clearColor.r * 255);
+      const g8 = Math.round(clearColor.g * 255);
+      const b8 = Math.round(clearColor.b * 255);
+      document.body.style.backgroundColor = `rgb(${r8},${g8},${b8})`;
+    } else {
+      clearColor = { r: 0, g: 0, b: 0, a: 1 };
+      document.body.style.backgroundColor = "#000000";
+    }
+
     const scene = frame.scene;
     const batches = this.buildBatches(scene);
+
+    // Color diagnostics: log theme hints and first few quad colors.
+    // Enable with: window.__ZED_RENDERER_DEBUG = true
+    if (isDebug() && frame.frame_id % 60 === 0) {
+      if (frame.theme_hints) {
+        console.log(
+          `[color] theme: ${frame.theme_hints.appearance}, bg_css: ${frame.theme_hints.background_css}, bg_rgb: 0x${frame.theme_hints.background_rgb.toString(16).padStart(6, "0")}`,
+        );
+      }
+      for (let i = 0; i < Math.min(3, scene.quads.length); i++) {
+        const q = scene.quads[i];
+        const solid = q.background.solid;
+        const rgba = hslaToRgba(solid);
+        console.log(
+          `[color] quad[${i}] order=${q.order} tag=${q.background.tag}` +
+            ` HSLA: h=${solid.h.toFixed(4)} s=${solid.s.toFixed(4)} l=${solid.l.toFixed(4)} a=${solid.a.toFixed(4)}` +
+            ` → RGBA: r=${rgba.r.toFixed(3)} g=${rgba.g.toFixed(3)} b=${rgba.b.toFixed(3)} a=${rgba.a.toFixed(3)}` +
+            ` bounds: ${q.bounds.origin.x.toFixed(0)},${q.bounds.origin.y.toFixed(0)} ${q.bounds.size.width.toFixed(0)}x${q.bounds.size.height.toFixed(0)}`,
+        );
+      }
+    }
+
+    // Diagnostics: count atlas tile misses for sprite batches
+    if (isDebug()) {
+      let monoMiss = 0;
+      let monoTotal = scene.monochrome_sprites.length;
+      for (const s of scene.monochrome_sprites) {
+        if (!this.atlas.getTextureView(s.tile.texture_id)) monoMiss++;
+      }
+      let subMiss = 0;
+      let subTotal = scene.subpixel_sprites.length;
+      for (const s of scene.subpixel_sprites) {
+        if (!this.atlas.getTextureView(s.tile.texture_id)) subMiss++;
+      }
+      let polyMiss = 0;
+      let polyTotal = scene.polychrome_sprites.length;
+      for (const s of scene.polychrome_sprites) {
+        if (!this.atlas.getTextureView(s.tile.texture_id)) polyMiss++;
+      }
+      console.log(
+        `[renderer] frame ${frame.frame_id}: ${batches.length} batches, ` +
+          `${scene.quads.length} quads, ` +
+          `mono ${monoTotal - monoMiss}/${monoTotal}, ` +
+          `sub ${subTotal - subMiss}/${subTotal}, ` +
+          `poly ${polyTotal - polyMiss}/${polyTotal}, ` +
+          `${frame.atlas_deltas.length} atlas deltas`,
+      );
+    }
 
     const textureView = this.context.getCurrentTexture().createView();
 
@@ -259,7 +380,7 @@ export class Renderer {
       colorAttachments: [
         {
           view: textureView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          clearValue: clearColor,
           loadOp: "clear" as GPULoadOp,
           storeOp: "store" as GPUStoreOp,
         },
@@ -324,7 +445,7 @@ export class Renderer {
         },
         {
           binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           texture: { sampleType: "float" as GPUTextureSampleType },
         },
         {
@@ -458,7 +579,7 @@ export class Renderer {
     const view = new DataView(globals);
     view.setFloat32(0, viewportWidth, true);
     view.setFloat32(4, viewportHeight, true);
-    view.setUint32(8, 1, true); // premultiplied_alpha = true for browser
+    view.setUint32(8, 1, true); // premultiplied_alpha = true (shader premultiplies RGB*A, blend with src=one dst=1-srcA)
     view.setUint32(12, 0, true); // pad
     this.device.queue.writeBuffer(this.globalsBuffer, 0, globals);
 

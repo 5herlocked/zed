@@ -7,6 +7,11 @@ fn main() {
     let target = env::var("CARGO_CFG_TARGET_OS");
     println!("cargo::rustc-check-cfg=cfg(gles)");
 
+    // Compile protobuf schema for web streaming wire protocol.
+    // The proto file is always compiled when prost-build is available,
+    // but the generated code is only included behind #[cfg(feature = "web-streaming")].
+    compile_scene_proto();
+
     match target.as_deref() {
         Ok("macos") => {
             #[cfg(target_os = "macos")]
@@ -18,6 +23,17 @@ fn main() {
         }
         _ => (),
     };
+}
+
+fn compile_scene_proto() {
+    let proto_file = "proto/scene.proto";
+    println!("cargo:rerun-if-changed={}", proto_file);
+
+    if std::path::Path::new(proto_file).exists() {
+        prost_build::Config::new()
+            .compile_protos(&[proto_file], &["proto"])
+            .expect("Failed to compile scene.proto");
+    }
 }
 #[cfg(target_os = "macos")]
 mod macos {

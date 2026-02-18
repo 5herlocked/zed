@@ -253,12 +253,21 @@ export interface AtlasDelta {
   bytes: Uint8Array;
 }
 
+export interface ThemeHints {
+  appearance: string;
+  background_rgb: number;
+  background_css: string;
+  background_appearance: string;
+}
+
 export interface FrameMessage {
   frame_id: number;
   viewport_size: Size;
   scale_factor: number;
   atlas_deltas: AtlasDelta[];
   scene: Scene;
+  background_color?: Hsla;
+  theme_hints?: ThemeHints;
 }
 
 // ---------------------------------------------------------------------------

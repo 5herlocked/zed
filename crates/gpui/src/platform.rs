@@ -5,6 +5,8 @@ mod keystroke;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
 
+pub(crate) mod web_streaming;
+
 #[cfg(target_os = "macos")]
 mod mac;
 
@@ -880,6 +882,7 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 struct AtlasTextureList<T> {

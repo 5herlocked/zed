@@ -5,15 +5,20 @@
   "type": "module",
   "source": "index.html",
   "scripts": {
-    "dev": "parcel serve --port 3100",
-    "build": "parcel build",
+    "proto": "pbjs -t static-module -w es6 -o src/proto/scene.js ../crates/gpui/proto/scene.proto && pbts -o src/proto/scene.d.ts src/proto/scene.js",
+    "dev": "npm run proto && parcel serve --port 3100",
+    "build": "npm run proto && parcel build",
     "clean": "rm -rf dist .parcel-cache"
+  },
+  "dependencies": {
+    "protobufjs": "^7.5.4"
   },
   "devDependencies": {
     "@parcel/transformer-inline-string": "^2.16.4",
     "@webgpu/types": "^0.1.49",
     "parcel": "^2.15.0",
     "parcel-reporter-static-files-copy": "^1.5.3",
+    "protobufjs-cli": "^2.0.0",
     "typescript": "^5.7.0"
   }
 }

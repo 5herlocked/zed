@@ -16,13 +16,14 @@ import { Atlas } from "./atlas";
 import { Renderer } from "./renderer";
 import { InputHandler } from "./input";
 import { FrameMessage, InputMessage, deserializeFrame } from "./protocol";
+import { decodeProtoFrame } from "./proto_decoder";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 // WebSocket endpoint for scene streaming. Override with ?ws=url.
-const DEFAULT_WS_URL = `ws://${window.location.hostname}:3101/scene`;
+const DEFAULT_WS_URL = `ws://${window.location.hostname}:3101`;
 
 // How long to wait before reconnecting after a WebSocket disconnect (ms).
 const RECONNECT_DELAY = 2000;
@@ -39,8 +40,13 @@ let destroyed = false;
 
 // Stats overlay
 let frameCount = 0;
+let framesReceived = 0;
 let lastStatsTime = performance.now();
 let statsElement: HTMLElement | null = null;
+let lastFrame: FrameMessage | null = null;
+let fixtureAnimationFrameId: number | null = null;
+let wsAnimationFrameId: number | null = null;
+let pendingFrame: FrameMessage | null = null;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -165,11 +171,35 @@ async function loadFixture(name: string): Promise<void> {
     );
 
     renderer?.drawFrame(frame);
+    lastFrame = frame;
     frameCount++;
-    updateStats();
+    updateStats(true);
+
+    // Start continuous render loop to measure sustained fps for fixtures
+    startFixtureRenderLoop();
   } catch (error) {
     console.error(`Failed to load fixture "${name}":`, error);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture render loop (continuous redraw for fps measurement)
+// ---------------------------------------------------------------------------
+
+function startFixtureRenderLoop(): void {
+  if (fixtureAnimationFrameId !== null) return;
+
+  const renderTick = (): void => {
+    if (!renderer || !lastFrame) return;
+
+    renderer.drawFrame(lastFrame);
+    frameCount++;
+    updateStats();
+
+    fixtureAnimationFrameId = requestAnimationFrame(renderTick);
+  };
+
+  fixtureAnimationFrameId = requestAnimationFrame(renderTick);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,19 +254,22 @@ function scheduleReconnect(url: string): void {
 function handleServerMessage(data: unknown): void {
   if (!renderer) return;
 
-  let frame: FrameMessage;
+  let frame: FrameMessage | null;
 
   if (data instanceof ArrayBuffer) {
-    // Binary message: for Phase 2+ when we use a binary wire format.
-    // For now, try to decode as UTF-8 JSON.
-    const text = new TextDecoder().decode(data);
-    try {
-      frame = deserializeFrame(JSON.parse(text));
-    } catch (error) {
-      console.error("Failed to parse binary message as JSON:", error);
+    // Protobuf wire format from the Rust proto_encoding::encode_frame.
+    frame = decodeProtoFrame(data);
+    if (!frame) {
+      console.error("Failed to decode protobuf frame");
       return;
     }
+  } else if (data instanceof Blob) {
+    // Some WebSocket implementations deliver binary as Blob.
+    // Convert to ArrayBuffer and decode on next tick.
+    data.arrayBuffer().then((buf) => handleServerMessage(buf));
+    return;
   } else if (typeof data === "string") {
+    // JSON fallback (for test server or debugging).
     try {
       frame = deserializeFrame(JSON.parse(data));
     } catch (error) {
@@ -248,7 +281,37 @@ function handleServerMessage(data: unknown): void {
     return;
   }
 
-  renderer.drawFrame(frame);
+  framesReceived++;
+
+  // Log atlas delta stats on first few frames for debugging
+  if (framesReceived <= 5 && frame.atlas_deltas.length > 0) {
+    const totalBytes = frame.atlas_deltas.reduce((sum, d) => sum + d.bytes.length, 0);
+    console.log(
+      `Frame ${frame.frame_id}: ${frame.atlas_deltas.length} atlas deltas, ` +
+        `${(totalBytes / 1024).toFixed(1)} KB tile data, ` +
+        `${frame.scene.quads.length} quads, ` +
+        `${frame.scene.monochrome_sprites.length + frame.scene.subpixel_sprites.length} text sprites`,
+    );
+  }
+
+  // Store the latest frame and schedule a render on the next animation frame.
+  // This coalesces multiple server frames if they arrive faster than the
+  // display refresh rate, always rendering the most recent one.
+  pendingFrame = frame;
+
+  if (wsAnimationFrameId === null) {
+    wsAnimationFrameId = requestAnimationFrame(renderPendingFrame);
+  }
+}
+
+function renderPendingFrame(): void {
+  wsAnimationFrameId = null;
+
+  if (!renderer || !pendingFrame) return;
+
+  renderer.drawFrame(pendingFrame);
+  lastFrame = pendingFrame;
+  pendingFrame = null;
   frameCount++;
   updateStats();
 }
@@ -286,20 +349,22 @@ function createStatsOverlay(): HTMLElement {
     "pointer-events: none",
     "z-index: 1000",
   ].join(";");
-  element.textContent = "0 fps | 0 frames";
+  element.textContent = "connecting...";
   document.body.appendChild(element);
   return element;
 }
 
-function updateStats(): void {
+function updateStats(force = false): void {
   const now = performance.now();
   const elapsed = now - lastStatsTime;
 
-  if (elapsed >= 1000 && statsElement) {
-    const fps = Math.round((frameCount / elapsed) * 1000);
-    statsElement.textContent = `${fps} fps | frame ${frameCount}`;
+  if (statsElement && (force || elapsed >= 1000)) {
+    const renderFps = elapsed > 0 ? Math.round((frameCount / elapsed) * 1000) : 0;
+    const serverFps = elapsed > 0 ? Math.round((framesReceived / elapsed) * 1000) : 0;
+    statsElement.textContent = `${renderFps} render / ${serverFps} server fps`;
+    frameCount = 0;
+    framesReceived = 0;
     lastStatsTime = now;
-    // Don't reset frameCount -- keep it as a running total for fixture mode
   }
 }
 
@@ -309,6 +374,17 @@ function updateStats(): void {
 
 function destroy(): void {
   destroyed = true;
+  pendingFrame = null;
+
+  if (fixtureAnimationFrameId !== null) {
+    cancelAnimationFrame(fixtureAnimationFrameId);
+    fixtureAnimationFrameId = null;
+  }
+
+  if (wsAnimationFrameId !== null) {
+    cancelAnimationFrame(wsAnimationFrameId);
+    wsAnimationFrameId = null;
+  }
 
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer);

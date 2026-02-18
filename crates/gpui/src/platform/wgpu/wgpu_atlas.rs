@@ -107,6 +107,10 @@ impl PlatformAtlas for WgpuAtlas {
             }
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl WgpuAtlasState {

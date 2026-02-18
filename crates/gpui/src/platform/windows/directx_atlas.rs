@@ -122,6 +122,10 @@ impl PlatformAtlas for DirectXAtlas {
             }
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl DirectXAtlasState {

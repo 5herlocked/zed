@@ -593,6 +593,15 @@ pub struct App {
     pub(crate) active_drag: Option<AnyDrag>,
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) foreground_executor: ForegroundExecutor,
+    pub(crate) scene_observer_factory: Option<
+        Arc<
+            dyn Fn(
+                    Arc<dyn crate::PlatformAtlas>,
+                ) -> Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>
+                + Send
+                + Sync,
+        >,
+    >,
     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
     asset_source: Arc<dyn AssetSource>,
     pub(crate) svg_renderer: SvgRenderer,
@@ -677,6 +686,7 @@ impl App {
                 active_drag: None,
                 background_executor,
                 foreground_executor,
+                scene_observer_factory: None,
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
                 asset_source,
@@ -1021,6 +1031,13 @@ impl App {
             let handle = WindowHandle::new(id);
             match Window::new(handle.into(), options, cx) {
                 Ok(mut window) => {
+                    // If a scene observer factory is registered (e.g., for web streaming),
+                    // attach an observer to this window so every frame presentation is
+                    // captured and broadcast.
+                    if let Some(factory) = &cx.scene_observer_factory {
+                        window.set_scene_observer(factory(window.sprite_atlas.clone()));
+                    }
+
                     cx.window_update_stack.push(id);
                     let root_view = build_root_view(&mut window, cx);
                     cx.window_update_stack.pop();
@@ -1292,6 +1309,28 @@ impl App {
     /// Sets the HTTP client for the application.
     pub fn set_http_client(&mut self, new_client: Arc<dyn HttpClient>) {
         self.http_client = new_client;
+    }
+
+    /// Register a factory that creates scene observers for new windows.
+    ///
+    /// When set, every window opened via `open_window` will have a scene
+    /// observer attached that is called on every frame presentation. This
+    /// is used by the web streaming backend to capture and broadcast scenes
+    /// to connected browser clients.
+    ///
+    /// The factory is called once per window and should return a closure
+    /// that receives a reference to the rendered `Scene`.
+    pub(crate) fn set_scene_observer_factory(
+        &mut self,
+        factory: Arc<
+            dyn Fn(
+                    Arc<dyn crate::PlatformAtlas>,
+                ) -> Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>
+                + Send
+                + Sync,
+        >,
+    ) {
+        self.scene_observer_factory = Some(factory);
     }
 
     /// Configures when the application should automatically quit.

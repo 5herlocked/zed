@@ -1,0 +1,298 @@
+syntax = "proto3";
+
+package zed.scene;
+
+// Top-level frame message sent from server to browser on each presentation.
+message FrameMessage {
+  uint64 frame_id = 1;
+  float viewport_width = 2;
+  float viewport_height = 3;
+  float scale_factor = 4;
+  repeated AtlasEntry atlas_entries = 5;
+  SceneBody scene = 6;
+  // The window's background color as raw HSLA (for shader use).
+  Hsla background_color = 7;
+  // Pre-computed theme hints with RGB hex values the browser can use
+  // directly without any color space conversion.
+  ThemeHints theme_hints = 8;
+}
+
+// Pre-computed theme metadata sent alongside each frame so the browser
+// can set CSS properties, canvas clear colors, and other rendering hints
+// without depending on the HSLA-to-RGBA shader pipeline being pixel-perfect.
+message ThemeHints {
+  // "light" or "dark"
+  string appearance = 1;
+  // Pre-converted background color as 0xRRGGBB integer.
+  // The browser can use this directly for CSS: `#${hex.toString(16).padStart(6,'0')}`
+  uint32 background_rgb = 2;
+  // Background color as CSS-ready string, e.g. "#1e1e2e"
+  string background_css = 3;
+  // Whether the window background is opaque, transparent, or blurred.
+  string background_appearance = 4;
+}
+
+// The complete set of primitives for a single frame.
+message SceneBody {
+  repeated Shadow shadows = 1;
+  repeated Quad quads = 2;
+  repeated Underline underlines = 3;
+  repeated MonochromeSprite monochrome_sprites = 4;
+  repeated SubpixelSprite subpixel_sprites = 5;
+  repeated PolychromeSprite polychrome_sprites = 6;
+  repeated Path paths = 7;
+}
+
+// Atlas tile pixel data. Every sprite tile referenced by the scene is included
+// as a full snapshot -- no delta tracking. The browser caches tiles locally by
+// identity (texture_id + bounds) to avoid redundant GPU uploads.
+message AtlasEntry {
+  AtlasTextureId texture_id = 1;
+  AtlasBounds bounds = 2;
+  // 0 = Monochrome (r8, 1 bpp), 1 = Polychrome (bgra8, 4 bpp), 2 = Subpixel (bgra8, 4 bpp)
+  uint32 format = 3;
+  bytes pixel_data = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+message Point {
+  float x = 1;
+  float y = 2;
+}
+
+message Size {
+  float width = 1;
+  float height = 2;
+}
+
+message Bounds {
+  Point origin = 1;
+  Size size = 2;
+}
+
+message ContentMask {
+  Bounds bounds = 1;
+}
+
+message Corners {
+  float top_left = 1;
+  float top_right = 2;
+  float bottom_right = 3;
+  float bottom_left = 4;
+}
+
+message Edges {
+  float top = 1;
+  float right = 2;
+  float bottom = 3;
+  float left = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Color
+// ---------------------------------------------------------------------------
+
+// Raw HSLA values as expected by the WGSL hsla_to_rgba shader function.
+// NOT converted to RGBA -- the browser shader handles the conversion.
+message Hsla {
+  float h = 1;
+  float s = 2;
+  float l = 3;
+  float a = 4;
+}
+
+message LinearColorStop {
+  Hsla color = 1;
+  float percentage = 2;
+}
+
+// Background fill: solid color, linear gradient, pattern slash, or checkerboard.
+message Background {
+  // 0 = Solid, 1 = LinearGradient, 2 = PatternSlash, 3 = Checkerboard
+  uint32 tag = 1;
+  // 0 = sRGB, 1 = Oklab
+  uint32 color_space = 2;
+  Hsla solid = 3;
+  float gradient_angle_or_pattern_height = 4;
+  repeated LinearColorStop colors = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Atlas
+// ---------------------------------------------------------------------------
+
+message AtlasTextureId {
+  uint32 index = 1;
+  // 0 = Monochrome, 1 = Polychrome, 2 = Subpixel
+  uint32 kind = 2;
+}
+
+message AtlasBounds {
+  int32 origin_x = 1;
+  int32 origin_y = 2;
+  int32 width = 3;
+  int32 height = 4;
+}
+
+message AtlasTile {
+  AtlasTextureId texture_id = 1;
+  uint32 tile_id = 2;
+  uint32 padding = 3;
+  AtlasBounds bounds = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Transformation
+// ---------------------------------------------------------------------------
+
+message TransformationMatrix {
+  // Row-major 2x2 rotation/scale matrix.
+  // The WGSL shader transposes this to column-major.
+  float r00 = 1;
+  float r01 = 2;
+  float r10 = 3;
+  float r11 = 4;
+  float tx = 5;
+  float ty = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Scene Primitives
+// ---------------------------------------------------------------------------
+
+message Shadow {
+  uint32 order = 1;
+  float blur_radius = 2;
+  Bounds bounds = 3;
+  Corners corner_radii = 4;
+  ContentMask content_mask = 5;
+  Hsla color = 6;
+}
+
+message Quad {
+  uint32 order = 1;
+  // 0 = Solid, 1 = Dashed
+  uint32 border_style = 2;
+  Bounds bounds = 3;
+  ContentMask content_mask = 4;
+  Background background = 5;
+  Hsla border_color = 6;
+  Corners corner_radii = 7;
+  Edges border_widths = 8;
+}
+
+message Underline {
+  uint32 order = 1;
+  Bounds bounds = 2;
+  ContentMask content_mask = 3;
+  Hsla color = 4;
+  float thickness = 5;
+  bool wavy = 6;
+}
+
+message MonochromeSprite {
+  uint32 order = 1;
+  Bounds bounds = 2;
+  ContentMask content_mask = 3;
+  Hsla color = 4;
+  AtlasTile tile = 5;
+  TransformationMatrix transformation = 6;
+}
+
+message SubpixelSprite {
+  uint32 order = 1;
+  Bounds bounds = 2;
+  ContentMask content_mask = 3;
+  Hsla color = 4;
+  AtlasTile tile = 5;
+  TransformationMatrix transformation = 6;
+}
+
+message PolychromeSprite {
+  uint32 order = 1;
+  bool grayscale = 2;
+  float opacity = 3;
+  Bounds bounds = 4;
+  ContentMask content_mask = 5;
+  Corners corner_radii = 6;
+  AtlasTile tile = 7;
+}
+
+message PathVertex {
+  Point xy_position = 1;
+  Point st_position = 2;
+  ContentMask content_mask = 3;
+}
+
+message Path {
+  uint32 order = 1;
+  Bounds bounds = 2;
+  ContentMask content_mask = 3;
+  Background color = 4;
+  repeated PathVertex vertices = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Input (browser -> server)
+// ---------------------------------------------------------------------------
+
+message InputMessage {
+  oneof kind {
+    MouseMoveInput mouse_move = 1;
+    MouseDownInput mouse_down = 2;
+    MouseUpInput mouse_up = 3;
+    ScrollInput scroll = 4;
+    KeyDownInput key_down = 5;
+    KeyUpInput key_up = 6;
+    ResizeInput resize = 7;
+  }
+}
+
+message Modifiers {
+  bool control = 1;
+  bool alt = 2;
+  bool shift = 3;
+  bool meta = 4;
+}
+
+message MouseMoveInput {
+  Point position = 1;
+  Modifiers modifiers = 2;
+}
+
+message MouseDownInput {
+  uint32 button = 1;
+  Point position = 2;
+  uint32 click_count = 3;
+  Modifiers modifiers = 4;
+}
+
+message MouseUpInput {
+  uint32 button = 1;
+  Point position = 2;
+  Modifiers modifiers = 3;
+}
+
+message ScrollInput {
+  Point position = 1;
+  Point delta = 2;
+  Modifiers modifiers = 3;
+}
+
+message KeyDownInput {
+  string key = 1;
+  Modifiers modifiers = 2;
+}
+
+message KeyUpInput {
+  string key = 1;
+  Modifiers modifiers = 2;
+}
+
+message ResizeInput {
+  Size size = 1;
+  float scale_factor = 2;
+}

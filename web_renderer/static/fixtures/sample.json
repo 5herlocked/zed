@@ -6,17 +6,17 @@
   "scene": {
     "shadows": [
       {
-        "order": 0,
-        "blur_radius": 16.0,
+        "order": 99,
+        "blur_radius": 24.0,
         "bounds": {
-          "origin": { "x": 200.0, "y": 150.0 },
-          "size": { "width": 880.0, "height": 520.0 }
+          "origin": { "x": 1800.0, "y": 300.0 },
+          "size": { "width": 400.0, "height": 300.0 }
         },
         "corner_radii": {
-          "top_left": 12.0,
-          "top_right": 12.0,
-          "bottom_right": 12.0,
-          "bottom_left": 12.0
+          "top_left": 16.0,
+          "top_right": 16.0,
+          "bottom_right": 16.0,
+          "bottom_left": 16.0
         },
         "content_mask": {
           "bounds": {
@@ -24,7 +24,7 @@
             "size": { "width": 2560.0, "height": 1440.0 }
           }
         },
-        "color": { "h": 0.0, "s": 0.0, "l": 0.0, "a": 0.4 }
+        "color": { "h": 0.0, "s": 0.0, "l": 0.0, "a": 0.6 }
       }
     ],
     "quads": [
@@ -578,8 +578,8 @@
       {
         "order": 60,
         "bounds": {
-          "origin": { "x": 660.0, "y": 490.0 },
-          "size": { "width": 200.0, "height": 4.0 }
+          "origin": { "x": 700.0, "y": 700.0 },
+          "size": { "width": 500.0, "height": 12.0 }
         },
         "content_mask": {
           "bounds": {
@@ -587,15 +587,15 @@
             "size": { "width": 2058.0, "height": 1376.0 }
           }
         },
-        "color": { "h": 0.0, "s": 0.8, "l": 0.6, "a": 0.8 },
-        "thickness": 2.0,
+        "color": { "h": 0.0, "s": 0.85, "l": 0.55, "a": 1.0 },
+        "thickness": 4.0,
         "wavy": 1
       },
       {
         "order": 60,
         "bounds": {
-          "origin": { "x": 660.0, "y": 540.0 },
-          "size": { "width": 300.0, "height": 2.0 }
+          "origin": { "x": 700.0, "y": 760.0 },
+          "size": { "width": 500.0, "height": 4.0 }
         },
         "content_mask": {
           "bounds": {
@@ -603,8 +603,8 @@
             "size": { "width": 2058.0, "height": 1376.0 }
           }
         },
-        "color": { "h": 0.0, "s": 0.0, "l": 0.7, "a": 0.5 },
-        "thickness": 2.0,
+        "color": { "h": 0.6167, "s": 0.7, "l": 0.65, "a": 1.0 },
+        "thickness": 4.0,
         "wavy": 0
       }
     ],
