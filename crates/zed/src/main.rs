@@ -416,8 +416,6 @@ fn main() {
     });
 
     app.run(move |cx| {
-        gpui::init_web_streaming(cx);
-
         let db_trusted_paths = match workspace::WORKSPACE_DB.fetch_trusted_worktrees() {
             Ok(trusted_paths) => trusted_paths,
             Err(e) => {

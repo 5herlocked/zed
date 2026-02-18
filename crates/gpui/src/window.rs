@@ -50,8 +50,12 @@ use std::{
     },
     time::{Duration, Instant},
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::post_inc;
+#[cfg(not(target_arch = "wasm32"))]
 use util::{ResultExt, measure};
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::{post_inc, ResultExt, measure};
 use uuid::Uuid;
 
 mod prompts;
@@ -949,7 +953,6 @@ pub struct Window {
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
     prompt: Option<RenderablePromptHandle>,
     pub(crate) client_inset: Option<Pixels>,
-    scene_observer: RefCell<Option<Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>>>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
 }
@@ -1142,13 +1145,7 @@ impl Window {
         }
 
         let display_id = platform_window.display().map(|display| display.id());
-        let sprite_atlas: Arc<dyn PlatformAtlas> = if cx.scene_observer_factory.is_some() {
-            Arc::new(crate::platform::web_streaming::MirroringAtlas::new(
-                platform_window.sprite_atlas(),
-            ))
-        } else {
-            platform_window.sprite_atlas()
-        };
+        let sprite_atlas = platform_window.sprite_atlas();
         let mouse_position = platform_window.mouse_position();
         let modifiers = platform_window.modifiers();
         let capslock = platform_window.capslock();
@@ -1440,7 +1437,6 @@ impl Window {
             prompt: None,
             client_inset: None,
             image_cache_stack: Vec::new(),
-            scene_observer: RefCell::new(None),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
@@ -2268,23 +2264,9 @@ impl Window {
 
     #[profiling::function]
     fn present(&self) {
-        let scene = &self.rendered_frame.scene;
-        if let Some(observer) = self.scene_observer.borrow().as_ref() {
-            observer(scene, self.viewport_size, self.scale_factor);
-        }
-        self.platform_window.draw(scene);
+        self.platform_window.draw(&self.rendered_frame.scene);
         self.needs_present.set(false);
         profiling::finish_frame!();
-    }
-
-    /// Register an observer that is called with the rendered scene, viewport
-    /// size, and scale factor on every frame presentation. Used by the web
-    /// streaming backend to serialize and broadcast scenes to browser clients.
-    pub(crate) fn set_scene_observer(
-        &self,
-        observer: Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>,
-    ) {
-        *self.scene_observer.borrow_mut() = Some(observer);
     }
 
     fn draw_roots(&mut self, cx: &mut App) {
@@ -3404,16 +3386,20 @@ impl Window {
             }),
         };
 
-        let Some(tile) =
-            self.sprite_atlas
-                .get_or_insert_with(&params.clone().into(), &mut || {
-                    let Some((size, bytes)) = cx.svg_renderer.render_alpha_mask(&params, data)?
-                    else {
-                        return Ok(None);
-                    };
-                    Ok(Some((size, Cow::Owned(bytes))))
-                })?
-        else {
+        #[cfg(not(target_arch = "wasm32"))]
+        let svg_tile = self
+            .sprite_atlas
+            .get_or_insert_with(&params.clone().into(), &mut || {
+                let Some((size, bytes)) = cx.svg_renderer.render_alpha_mask(&params, data)?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((size, Cow::Owned(bytes))))
+            })?;
+        #[cfg(target_arch = "wasm32")]
+        let svg_tile: Option<crate::AtlasTile> = None;
+
+        let Some(tile) = svg_tile else {
             return Ok(());
         };
         let content_mask = self.content_mask().scale(scale_factor);

@@ -20,9 +20,11 @@ name = "remote_server"
 default = []
 debug-embed = ["dep:rust-embed"]
 test-support = ["fs/test-support"]
+web-server = ["dep:async-tungstenite"]
 
 [dependencies]
 anyhow.workspace = true
+async-tungstenite = { workspace = true, optional = true }
 askpass.workspace = true
 clap.workspace = true
 client.workspace = true
@@ -52,6 +54,7 @@ net.workspace = true
 node_runtime.workspace = true
 paths.workspace = true
 project.workspace = true
+prost.workspace = true
 proto.workspace = true
 release_channel.workspace = true
 remote.workspace = true

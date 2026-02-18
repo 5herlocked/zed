@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use util::*;
 
 /// A helper trait for building complex objects with imperative conditionals in a fluent style.

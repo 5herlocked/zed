@@ -20,8 +20,13 @@ pub mod colors;
 mod element;
 mod elements;
 mod executor;
+#[cfg(not(target_arch = "wasm32"))]
 mod platform_scheduler;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use platform_scheduler::PlatformScheduler;
+#[cfg(target_arch = "wasm32")]
+#[macro_use]
+mod wasm_shims;
 mod geometry;
 mod global;
 mod input;
@@ -58,6 +63,7 @@ pub mod _ownership_and_data_flow;
 #[doc(hidden)]
 pub mod private {
     pub use anyhow;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use inventory;
     pub use schemars;
     pub use serde;
@@ -77,6 +83,7 @@ pub(crate) use arena::*;
 pub use asset_cache::*;
 pub use assets::*;
 pub use color::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use ctor::ctor;
 pub use element::*;
 pub use elements::*;
@@ -84,6 +91,7 @@ pub use executor::*;
 pub use geometry::*;
 pub use global::*;
 pub use gpui_macros::{AppContext, IntoElement, Render, VisualContext, register_action, test};
+#[cfg(not(target_arch = "wasm32"))]
 pub use http_client;
 pub use input::*;
 pub use inspector::*;
@@ -91,7 +99,6 @@ pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
 pub use path_builder::*;
-pub use platform::web_streaming::init_web_streaming;
 pub use platform::*;
 pub use profiler::*;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -111,7 +118,11 @@ pub use taffy::{AvailableSpace, LayoutId};
 #[cfg(any(test, feature = "test-support"))]
 pub use test::*;
 pub use text_system::*;
-pub use util::{FutureExt, Timeout, arc_cow::ArcCow};
+pub use util::{FutureExt, Timeout};
+#[cfg(not(target_arch = "wasm32"))]
+pub use util::arc_cow::ArcCow;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_shims::arc_cow::ArcCow;
 pub use view::*;
 pub use window::*;
 

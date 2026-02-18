@@ -5,7 +5,8 @@ mod keystroke;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
 
-pub(crate) mod web_streaming;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 #[cfg(target_os = "macos")]
 mod mac;
@@ -16,7 +17,7 @@ mod mac;
 ))]
 mod wgpu;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 mod test;
 
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
@@ -47,7 +48,10 @@ use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder as _, Frame};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(not(target_arch = "wasm32"))]
 pub use scheduler::RunnableMeta;
+#[cfg(target_arch = "wasm32")]
+pub use crate::wasm_shims::RunnableMeta;
 use schemars::JsonSchema;
 use seahash::SeaHasher;
 use serde::{Deserialize, Serialize};
@@ -75,15 +79,17 @@ pub use keystroke::*;
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::*;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub(crate) use test::*;
 #[cfg(target_os = "windows")]
 pub(crate) use windows::*;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web::*;
 
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 pub use linux::layer_shell;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
 
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
@@ -131,6 +137,11 @@ pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
             .inspect_err(|err| show_error("Failed to launch", err.to_string()))
             .unwrap(),
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
+    unimplemented!("WebPlatform requires explicit initialization with executors")
 }
 
 /// Return which compositor we're guessing we'll use.
@@ -882,7 +893,6 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
-    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 struct AtlasTextureList<T> {
@@ -1940,9 +1950,16 @@ impl Image {
             ImageFormat::Tiff => frames_for_image(&self.bytes, image::ImageFormat::Tiff)?,
             ImageFormat::Ico => frames_for_image(&self.bytes, image::ImageFormat::Ico)?,
             ImageFormat::Svg => {
-                return svg_renderer
-                    .render_single_frame(&self.bytes, 1.0, false)
-                    .map_err(Into::into);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    return svg_renderer
+                        .render_single_frame(&self.bytes, 1.0, false)
+                        .map_err(Into::into);
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    anyhow::bail!("SVG rendering not supported on WASM");
+                }
             }
         };
 

@@ -7,7 +7,10 @@ use crate::{
 use anyhow::Context as _;
 use derive_more::{Deref, DerefMut};
 use futures::channel::oneshot;
+#[cfg(not(target_arch = "wasm32"))]
 use smol::future::FutureExt;
+#[cfg(target_arch = "wasm32")]
+use futures::FutureExt;
 use std::{future::Future, rc::Weak};
 
 use super::{Context, WeakEntity};
@@ -236,6 +239,7 @@ impl AsyncApp {
     }
 
     /// Run something using this entity and cx, when the returned struct is dropped
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn on_drop<T: 'static, Callback: FnOnce(&mut T, &mut Context<T>) + 'static>(
         &self,
         entity: &WeakEntity<T>,
@@ -244,6 +248,20 @@ impl AsyncApp {
         let entity = entity.clone();
         let mut cx = self.clone();
         util::defer(move || {
+            entity.update(&mut cx, f).ok();
+        })
+    }
+
+    /// Run something using this entity and cx, when the returned struct is dropped
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_drop<T: 'static, Callback: FnOnce(&mut T, &mut Context<T>) + 'static>(
+        &self,
+        entity: &WeakEntity<T>,
+        f: Callback,
+    ) -> crate::wasm_shims::Deferred<impl FnOnce() + use<T, Callback>> {
+        let entity = entity.clone();
+        let mut cx = self.clone();
+        crate::wasm_shims::defer(move || {
             entity.update(&mut cx, f).ok();
         })
     }

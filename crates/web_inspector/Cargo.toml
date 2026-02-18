@@ -1,0 +1,25 @@
+[package]
+name = "web_inspector"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "CLI tool for inspecting WebSocket proto messages from Zed's remote server"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "web_inspector"
+
+[dependencies]
+anyhow.workspace = true
+async-tungstenite.workspace = true
+clap.workspace = true
+futures.workspace = true
+prost.workspace = true
+proto.workspace = true
+rpc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smol.workspace = true

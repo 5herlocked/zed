@@ -5,7 +5,10 @@ use std::{
     mem,
     rc::Rc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::post_inc;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::post_inc;
 
 pub(crate) struct SubscriberSet<EmitterKey, Callback>(
     Rc<RefCell<SubscriberSetState<EmitterKey, Callback>>>,

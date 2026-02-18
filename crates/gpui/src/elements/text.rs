@@ -16,7 +16,10 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::ResultExt;
 
 impl Element for &'static str {
     type RequestLayoutState = TextLayout;

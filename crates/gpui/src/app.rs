@@ -25,11 +25,15 @@ pub use async_context::*;
 use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
 pub use context::*;
 pub use entity_map::*;
+#[cfg(not(target_arch = "wasm32"))]
 use http_client::{HttpClient, Url};
 use smallvec::SmallVec;
 #[cfg(any(test, feature = "test-support"))]
 pub use test_context::*;
+#[cfg(not(target_arch = "wasm32"))]
 use util::{ResultExt, debug_panic};
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::{ResultExt, debug_panic};
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
 pub use visual_test_context::*;
 
@@ -43,11 +47,13 @@ use crate::{
     Platform, PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, Priority,
     PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
     RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
-    Subscription, SvgRenderer, Task, TextRenderingMode, TextSystem, ThermalState, Window,
+    Subscription, Task, TextRenderingMode, TextSystem, ThermalState, Window,
     WindowAppearance, WindowHandle, WindowId, WindowInvalidator,
     colors::{Colors, GlobalColors},
     current_platform, hash, init_app_menus,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::SvgRenderer;
 
 mod async_context;
 mod context;
@@ -134,6 +140,7 @@ pub struct Application(Rc<AppCell>);
 impl Application {
     /// Builds an app with the given asset source.
     #[allow(clippy::new_without_default)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
         #[cfg(any(test, feature = "test-support"))]
         log::info!("GPUI was compiled in test mode");
@@ -148,6 +155,7 @@ impl Application {
     /// Build an app in headless mode. This prevents opening windows,
     /// but makes it possible to run an application in an context like
     /// SSH, where GUI applications are not allowed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn headless() -> Self {
         Self(App::new_app(
             current_platform(true),
@@ -161,12 +169,16 @@ impl Application {
         let mut context_lock = self.0.borrow_mut();
         let asset_source = Arc::new(asset_source);
         context_lock.asset_source = asset_source.clone();
-        context_lock.svg_renderer = SvgRenderer::new(asset_source);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            context_lock.svg_renderer = SvgRenderer::new(asset_source);
+        }
         drop(context_lock);
         self
     }
 
     /// Sets the HTTP client for the application.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_http_client(self, http_client: Arc<dyn HttpClient>) -> Self {
         let mut context_lock = self.0.borrow_mut();
         context_lock.http_client = http_client;
@@ -593,18 +605,11 @@ pub struct App {
     pub(crate) active_drag: Option<AnyDrag>,
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) foreground_executor: ForegroundExecutor,
-    pub(crate) scene_observer_factory: Option<
-        Arc<
-            dyn Fn(
-                    Arc<dyn crate::PlatformAtlas>,
-                ) -> Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>
-                + Send
-                + Sync,
-        >,
-    >,
     pub(crate) loading_assets: FxHashMap<(TypeId, u64), Box<dyn Any>>,
     asset_source: Arc<dyn AssetSource>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) svg_renderer: SvgRenderer,
+    #[cfg(not(target_arch = "wasm32"))]
     http_client: Arc<dyn HttpClient>,
     pub(crate) globals_by_type: FxHashMap<TypeId, Box<dyn Any>>,
     pub(crate) entities: EntityMap,
@@ -656,10 +661,29 @@ pub struct App {
 
 impl App {
     #[allow(clippy::new_ret_no_self)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new_app(
         platform: Rc<dyn Platform>,
         asset_source: Arc<dyn AssetSource>,
         http_client: Arc<dyn HttpClient>,
+    ) -> Rc<AppCell> {
+        Self::new_app_inner(platform, asset_source, Some(http_client))
+    }
+
+    #[allow(clippy::new_ret_no_self)]
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn new_app(
+        platform: Rc<dyn Platform>,
+        asset_source: Arc<dyn AssetSource>,
+    ) -> Rc<AppCell> {
+        Self::new_app_inner(platform, asset_source)
+    }
+
+    #[allow(clippy::new_ret_no_self)]
+    fn new_app_inner(
+        platform: Rc<dyn Platform>,
+        asset_source: Arc<dyn AssetSource>,
+        #[cfg(not(target_arch = "wasm32"))] http_client: Option<Arc<dyn HttpClient>>,
     ) -> Rc<AppCell> {
         let background_executor = platform.background_executor();
         let foreground_executor = platform.foreground_executor();
@@ -686,11 +710,12 @@ impl App {
                 active_drag: None,
                 background_executor,
                 foreground_executor,
-                scene_observer_factory: None,
+                #[cfg(not(target_arch = "wasm32"))]
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
                 asset_source,
-                http_client,
+                #[cfg(not(target_arch = "wasm32"))]
+                http_client: http_client.expect("http_client required on native"),
                 globals_by_type: FxHashMap::default(),
                 entities,
                 new_entity_observers: SubscriberSet::new(),
@@ -1031,13 +1056,6 @@ impl App {
             let handle = WindowHandle::new(id);
             match Window::new(handle.into(), options, cx) {
                 Ok(mut window) => {
-                    // If a scene observer factory is registered (e.g., for web streaming),
-                    // attach an observer to this window so every frame presentation is
-                    // captured and broadcast.
-                    if let Some(factory) = &cx.scene_observer_factory {
-                        window.set_scene_observer(factory(window.sprite_atlas.clone()));
-                    }
-
                     cx.window_update_stack.push(id);
                     let root_view = build_root_view(&mut window, cx);
                     cx.window_update_stack.pop();
@@ -1302,35 +1320,15 @@ impl App {
     }
 
     /// Returns the HTTP client for the application.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn http_client(&self) -> Arc<dyn HttpClient> {
         self.http_client.clone()
     }
 
     /// Sets the HTTP client for the application.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_http_client(&mut self, new_client: Arc<dyn HttpClient>) {
         self.http_client = new_client;
-    }
-
-    /// Register a factory that creates scene observers for new windows.
-    ///
-    /// When set, every window opened via `open_window` will have a scene
-    /// observer attached that is called on every frame presentation. This
-    /// is used by the web streaming backend to capture and broadcast scenes
-    /// to connected browser clients.
-    ///
-    /// The factory is called once per window and should return a closure
-    /// that receives a reference to the rendered `Scene`.
-    pub(crate) fn set_scene_observer_factory(
-        &mut self,
-        factory: Arc<
-            dyn Fn(
-                    Arc<dyn crate::PlatformAtlas>,
-                ) -> Box<dyn Fn(&crate::Scene, crate::Size<crate::Pixels>, f32)>
-                + Send
-                + Sync,
-        >,
-    ) {
-        self.scene_observer_factory = Some(factory);
     }
 
     /// Configures when the application should automatically quit.
@@ -1340,6 +1338,7 @@ impl App {
     }
 
     /// Returns the SVG renderer used by the application.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn svg_renderer(&self) -> SvgRenderer {
         self.svg_renderer.clone()
     }
@@ -2552,8 +2551,10 @@ pub struct KeystrokeEvent {
     pub context_stack: Vec<KeyContext>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct NullHttpClient;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl HttpClient for NullHttpClient {
     fn send(
         &self,

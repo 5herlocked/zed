@@ -1,0 +1,25 @@
+[package]
+name = "gpui-web"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "WASM entry point for Zed's browser-based client"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_web.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow.workspace = true
+console_error_panic_hook.workspace = true
+js-sys.workspace = true
+log.workspace = true
+prost.workspace = true
+proto.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys.workspace = true

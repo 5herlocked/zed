@@ -22,7 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
+#[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::ResultExt;
 
 use super::{Stateful, StatefulInteractiveElement};
 
@@ -49,7 +52,14 @@ pub enum ImageSource {
 }
 
 fn is_uri(uri: &str) -> bool {
-    http_client::Uri::from_str(uri).is_ok()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        http_client::Uri::from_str(uri).is_ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        uri.starts_with("http://") || uri.starts_with("https://")
+    }
 }
 
 impl From<SharedUri> for ImageSource {
@@ -568,6 +578,7 @@ impl ImageSource {
 #[derive(Clone)]
 enum ImageDecoder {}
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Asset for ImageDecoder {
     type Source = Arc<Image>;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
@@ -581,10 +592,26 @@ impl Asset for ImageDecoder {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl Asset for ImageDecoder {
+    type Source = Arc<Image>;
+    type Output = Result<Arc<RenderImage>, ImageCacheError>;
+
+    fn load(
+        _source: Self::Source,
+        _cx: &mut App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        async move {
+            Err(ImageCacheError::Asset("Image decoding not supported on WASM".into()))
+        }
+    }
+}
+
 /// An image loader for the GPUI asset system
 #[derive(Clone)]
 pub enum ImageAssetLoader {}
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Asset for ImageAssetLoader {
     type Source = Resource;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
@@ -700,6 +727,21 @@ impl Asset for ImageAssetLoader {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl Asset for ImageAssetLoader {
+    type Source = Resource;
+    type Output = Result<Arc<RenderImage>, ImageCacheError>;
+
+    fn load(
+        _source: Self::Source,
+        _cx: &mut App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        async move {
+            Err(ImageCacheError::Asset("Image loading not supported on WASM".into()))
+        }
+    }
+}
+
 /// An error that can occur when interacting with the image cache.
 #[derive(Debug, Error, Clone)]
 pub enum ImageCacheError {
@@ -710,12 +752,24 @@ pub enum ImageCacheError {
     #[error("IO error: {0}")]
     Io(Arc<std::io::Error>),
     /// An error that occurred while processing an image.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("unexpected http status for {uri}: {status}, body: {body}")]
     BadStatus {
         /// The URI of the image.
         uri: SharedUri,
         /// The HTTP status code.
         status: http_client::StatusCode,
+        /// The HTTP response body.
+        body: String,
+    },
+    /// An error that occurred while processing an image (WASM stub).
+    #[cfg(target_arch = "wasm32")]
+    #[error("unexpected http status for {uri}: {status}, body: {body}")]
+    BadStatus {
+        /// The URI of the image.
+        uri: SharedUri,
+        /// The HTTP status code.
+        status: u16,
         /// The HTTP response body.
         body: String,
     },
@@ -726,6 +780,7 @@ pub enum ImageCacheError {
     #[error("image error: {0}")]
     Image(Arc<ImageError>),
     /// An error that occurred while processing an SVG.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("svg error: {0}")]
     Usvg(Arc<usvg::Error>),
 }
@@ -742,6 +797,7 @@ impl From<io::Error> for ImageCacheError {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<usvg::Error> for ImageCacheError {
     fn from(value: usvg::Error) -> Self {
         Self::Usvg(Arc::new(value))

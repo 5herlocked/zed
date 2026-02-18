@@ -6,7 +6,10 @@ use std::{
     borrow::{Borrow, Cow},
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::arc_cow::ArcCow;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::arc_cow::ArcCow;
 
 /// A shared string is an immutable string that can be cheaply cloned in GPUI
 /// tasks. Essentially an abstraction over an `Arc<str>` and `&'static str`,

@@ -6,7 +6,10 @@ use crate::{
     StyleRefinement, Styled, TransformationMatrix, Window, geometry::Negate as _, point, px,
     radians, size,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::ResultExt;
 
 /// An SVG element.
 pub struct Svg {

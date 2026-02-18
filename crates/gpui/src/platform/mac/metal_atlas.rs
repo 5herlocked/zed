@@ -88,10 +88,6 @@ impl PlatformAtlas for MetalAtlas {
             }
         }
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl MetalAtlasState {

@@ -420,6 +420,139 @@ fn start_server(
     RemoteClient::proto_client_from_channels(incoming_rx, outgoing_tx, cx, "server", is_wsl_interop)
 }
 
+#[cfg(feature = "web-server")]
+fn start_websocket_server(
+    port: u16,
+    _log_rx: Receiver<Vec<u8>>,
+    cx: &mut App,
+    is_wsl_interop: bool,
+) -> rpc::AnyProtoClient {
+    use async_tungstenite::tungstenite::Message;
+    use prost::Message as ProstMessage;
+    use smol::net::TcpListener;
+
+    let (incoming_tx, incoming_rx) = mpsc::unbounded::<Envelope>();
+    let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<Envelope>();
+    let (app_quit_tx, mut app_quit_rx) = mpsc::unbounded::<()>();
+
+    cx.on_app_quit(move |_| {
+        let mut app_quit_tx = app_quit_tx.clone();
+        async move {
+            log::info!("app quitting. sending signal to websocket server loop");
+            app_quit_tx.send(()).await.ok();
+        }
+    })
+    .detach();
+
+    cx.spawn(async move |cx| {
+        let listener = TcpListener::bind(format!("0.0.0.0:{port}"))
+            .await
+            .context("failed to bind WebSocket TCP listener")?;
+
+        log::info!("WebSocket server listening on port {port}");
+
+        loop {
+            let result = select! {
+                conn = listener.accept().fuse() => {
+                    let (tcp_stream, addr) = conn?;
+                    log::info!("WebSocket connection from {addr}");
+                    anyhow::Ok(tcp_stream)
+                }
+                _ = futures::StreamExt::next(&mut app_quit_rx).fuse() => {
+                    log::info!("app quit requested, stopping WebSocket server");
+                    return anyhow::Ok(());
+                }
+            };
+
+            let tcp_stream = match result {
+                Ok(s) => s,
+                Err(error) => {
+                    log::error!("failed to accept TCP connection: {error:?}");
+                    continue;
+                }
+            };
+
+            let ws_stream = match async_tungstenite::accept_async(tcp_stream).await {
+                Ok(s) => s,
+                Err(error) => {
+                    log::error!("WebSocket handshake failed: {error:?}");
+                    continue;
+                }
+            };
+
+            let (mut ws_sink, mut ws_source) = ws_stream.split();
+
+            let incoming_tx = incoming_tx.clone();
+            let stdin_msg_tx = incoming_tx.clone();
+            let (ws_read_done_tx, mut ws_read_done_rx) = mpsc::unbounded::<()>();
+
+            cx.background_executor().spawn({
+                let ws_read_done_tx = ws_read_done_tx.clone();
+                async move {
+                    while let Some(msg) = futures::StreamExt::next(&mut ws_source).await {
+                        match msg {
+                            Ok(Message::Binary(data)) => {
+                                match <Envelope as ProstMessage>::decode(data.as_ref()) {
+                                    Ok(envelope) => {
+                                        if stdin_msg_tx.unbounded_send(envelope).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        log::error!("failed to decode WebSocket message: {error:?}");
+                                    }
+                                }
+                            }
+                            Ok(Message::Close(_)) => {
+                                log::info!("WebSocket client disconnected");
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                log::error!("WebSocket read error: {error:?}");
+                                break;
+                            }
+                        }
+                    }
+                    ws_read_done_tx.unbounded_send(()).ok();
+                }
+            }).detach();
+
+            // Write outgoing messages to WebSocket until the connection closes
+            loop {
+                select_biased! {
+                    _ = futures::StreamExt::next(&mut app_quit_rx).fuse() => {
+                        return anyhow::Ok(());
+                    }
+                    _ = futures::StreamExt::next(&mut ws_read_done_rx).fuse() => {
+                        log::info!("WebSocket read side closed, waiting for new connection");
+                        break;
+                    }
+                    outgoing_message = futures::StreamExt::next(&mut outgoing_rx).fuse() => {
+                        let Some(envelope) = outgoing_message else {
+                            log::error!("outgoing channel closed");
+                            break;
+                        };
+                        let encoded_len = ProstMessage::encoded_len(&envelope);
+                        let mut buffer = Vec::with_capacity(encoded_len);
+                        if let Err(error) = ProstMessage::encode(&envelope, &mut buffer) {
+                            log::error!("failed to encode outgoing envelope: {error:?}");
+                            break;
+                        }
+                        if let Err(error) = ws_sink.send(Message::Binary(buffer.into())).await {
+                            log::error!("failed to send WebSocket message: {error:?}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .detach();
+
+    RemoteClient::proto_client_from_channels(incoming_rx, outgoing_tx, cx, "server", is_wsl_interop)
+}
+
 fn init_paths() -> anyhow::Result<()> {
     for path in [
         paths::config_dir(),
@@ -473,7 +606,16 @@ pub fn execute_run(
     write_pid_file(&pid_file, pid)
         .with_context(|| format!("failed to write pid file: {:?}", &pid_file))?;
 
-    let listeners = ServerListeners::new(stdin_socket, stdout_socket, stderr_socket)?;
+    #[cfg(feature = "web-server")]
+    let use_websocket = std::env::var("ZED_WEB_SERVER_PORT").is_ok();
+    #[cfg(not(feature = "web-server"))]
+    let use_websocket = false;
+
+    let listeners = if use_websocket {
+        None
+    } else {
+        Some(ServerListeners::new(stdin_socket, stdout_socket, stderr_socket)?)
+    };
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(std::thread::available_parallelism().map_or(1, |n| n.get().div_ceil(2)))
@@ -518,7 +660,17 @@ pub fn execute_run(
         };
 
         log::info!("gpui app started, initializing server");
-        let session = start_server(listeners, log_rx, cx, is_wsl_interop);
+
+        #[cfg(feature = "web-server")]
+        let session = if let Ok(port_str) = std::env::var("ZED_WEB_SERVER_PORT") {
+            let port: u16 = port_str.parse().expect("ZED_WEB_SERVER_PORT must be a valid port number");
+            log::info!("Starting WebSocket server on port {port}");
+            start_websocket_server(port, log_rx, cx, is_wsl_interop)
+        } else {
+            start_server(listeners.expect("listeners required for socket mode"), log_rx, cx, is_wsl_interop)
+        };
+        #[cfg(not(feature = "web-server"))]
+        let session = start_server(listeners.expect("listeners required"), log_rx, cx, is_wsl_interop);
         trusted_worktrees::init(HashMap::default(), cx);
 
         GitHostingProviderRegistry::set_global(git_hosting_provider_registry, cx);

@@ -367,8 +367,4 @@ impl PlatformAtlas for TestAtlas {
         let mut state = self.0.lock();
         state.tiles.remove(key);
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }

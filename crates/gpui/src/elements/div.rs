@@ -40,7 +40,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::ResultExt;
 
 use super::ImageCacheProvider;
 

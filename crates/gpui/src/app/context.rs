@@ -12,7 +12,10 @@ use std::{
     ops,
     sync::Arc,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use util::Deferred;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::Deferred;
 
 use super::{App, AsyncWindowContext, Entity, KeystrokeEvent};
 
@@ -278,9 +281,18 @@ impl<'a, T: 'static> Context<'a, T> {
     ) -> Deferred<impl FnOnce()> {
         let this = self.weak_entity();
         let mut cx = self.to_async();
-        util::defer(move || {
-            this.update(&mut cx, f).ok();
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            util::defer(move || {
+                this.update(&mut cx, f).ok();
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::wasm_shims::defer(move || {
+                this.update(&mut cx, f).ok();
+            })
+        }
     }
 
     /// Focus the given view in the given window. View type is required to implement Focusable.

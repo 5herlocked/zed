@@ -83,6 +83,7 @@ members = [
     "crates/go_to_line",
     "crates/google_ai",
     "crates/gpui",
+    "crates/gpui-web",
     "crates/gpui_macros",
     "crates/gpui_tokio",
     "crates/html_to_markdown",
@@ -203,6 +204,7 @@ members = [
     "crates/vim_mode_setting",
     "crates/which_key",
     "crates/watch",
+    "crates/web_inspector",
     "crates/web_search",
     "crates/web_search_providers",
     "crates/workspace",
@@ -733,6 +735,11 @@ uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde"] }
 walkdir = "2.5"
 wasm-encoder = "0.221"
 wasmparser = "0.221"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console", "WebSocket", "MessageEvent", "BinaryType", "ErrorEvent", "CloseEvent"] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
 wasmtime = { version = "33", default-features = false, features = [
     "async",
     "demangle",

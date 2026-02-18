@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result};
 use collections::HashMap;
 pub use gpui_macros::Action;
+#[cfg(not(target_arch = "wasm32"))]
 pub use no_action::{NoAction, is_no_action};
+#[cfg(target_arch = "wasm32")]
+pub use no_action::is_no_action;
 use serde_json::json;
 use std::{
     any::{Any, TypeId},
@@ -279,11 +282,13 @@ pub struct MacroActionData {
     pub documentation: Option<&'static str>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 inventory::collect!(MacroActionBuilder);
 
 impl ActionRegistry {
     /// Load all registered actions into the registry.
     pub(crate) fn load_actions(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
         for builder in inventory::iter::<MacroActionBuilder> {
             let action = builder.0();
             self.insert_action(action);
@@ -425,11 +430,19 @@ impl ActionRegistry {
 /// format suited for static analysis such as in validating keymaps, or
 /// generating documentation.
 pub fn generate_list_of_all_registered_actions() -> impl Iterator<Item = MacroActionData> {
-    inventory::iter::<MacroActionBuilder>
-        .into_iter()
-        .map(|builder| builder.0())
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        inventory::iter::<MacroActionBuilder>
+            .into_iter()
+            .map(|builder| builder.0())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::iter::empty()
+    }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 mod no_action {
     use crate as gpui;
     use std::any::Any as _;
@@ -446,5 +459,14 @@ mod no_action {
     /// Returns whether or not this action represents a removed key binding.
     pub fn is_no_action(action: &dyn gpui::Action) -> bool {
         action.as_any().type_id() == (NoAction {}).type_id()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod no_action {
+    /// Returns whether or not this action represents a removed key binding.
+    /// On WASM, always returns false since action registration is not supported.
+    pub fn is_no_action(_action: &dyn crate::Action) -> bool {
+        false
     }
 }

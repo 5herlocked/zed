@@ -65,10 +65,7 @@ x11 = [
 screen-capture = [
     "scap",
 ]
-web-streaming = [
-    "async-tungstenite",
-    "prost",
-]
+web = []
 windows-manifest = []
 
 [lib]
@@ -78,38 +75,24 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 async-task = "4.7"
-async-tungstenite = { workspace = true, optional = true }
-prost = { workspace = true, optional = true }
 backtrace = { workspace = true, optional = true }
 bitflags = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true }
 collections.workspace = true
-ctor.workspace = true
 derive_more.workspace = true
 etagere = "0.2"
 futures.workspace = true
 gpui_macros.workspace = true
-http_client.workspace = true
 image.workspace = true
-inventory.workspace = true
 itertools.workspace = true
 log.workspace = true
-num_cpus = "1.13"
 parking = "2.0.0"
 parking_lot.workspace = true
 postage.workspace = true
 chrono.workspace = true
 profiling.workspace = true
-rand.workspace = true
 raw-window-handle = "0.6"
 refineable.workspace = true
-scheduler.workspace = true
-resvg = { version = "0.45.0", default-features = false, features = [
-    "text",
-    "system-fonts",
-    "memmap-fonts",
-] }
-usvg = { version = "0.45.0", default-features = false }
 util_macros.workspace = true
 schemars.workspace = true
 seahash = "4.1"
@@ -118,20 +101,38 @@ serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
 smallvec.workspace = true
-smol.workspace = true
 stacksafe.workspace = true
 strum.workspace = true
 sum_tree.workspace = true
 taffy = "=0.9.0"
 thiserror.workspace = true
-util.workspace = true
-uuid.workspace = true
 waker-fn = "1.2.0"
 lyon = "1.0"
-libc.workspace = true
 pin-project = "1.1.10"
 circular-buffer.workspace = true
 spin = "0.10.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde", "js"] }
+
+# Dependencies that require native OS support (threads, filesystem, etc.)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid.workspace = true
+ctor.workspace = true
+http_client.workspace = true
+inventory.workspace = true
+libc.workspace = true
+num_cpus = "1.13"
+rand.workspace = true
+resvg = { version = "0.45.0", default-features = false, features = [
+    "text",
+    "system-fonts",
+    "memmap-fonts",
+] }
+scheduler.workspace = true
+smol.workspace = true
+usvg = { version = "0.45.0", default-features = false }
+util.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block = "0.1"
@@ -247,9 +248,6 @@ windows-registry = "0.5"
 bindgen = "0.71"
 cbindgen = { version = "0.28.0", default-features = false }
 naga.workspace = true
-
-[build-dependencies]
-prost-build.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.build-dependencies]
 naga.workspace = true
