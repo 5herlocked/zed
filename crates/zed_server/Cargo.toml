@@ -1,0 +1,28 @@
+[package]
+name = "zed_server"
+description = "Streaming server for Zed Web -- serves GPUI display trees over WebSocket"
+edition.workspace = true
+version = "0.1.0"
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "zed_server"
+
+[dependencies]
+anyhow.workspace = true
+bytes = "1"
+clap.workspace = true
+env_logger.workspace = true
+futures.workspace = true
+gpui = { workspace = true, features = ["headless-web", "font-kit"] }
+gpui_tokio.workspace = true
+log.workspace = true
+postcard = { version = "1", features = ["alloc"] }
+settings.workspace = true
+smol.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite.workspace = true

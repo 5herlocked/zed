@@ -96,9 +96,33 @@ impl Platform for StreamingPlatform {
 
     fn run(&self, on_finish_launching: Box<dyn FnOnce()>) {
         on_finish_launching();
+        // Block the main thread and pump the foreground executor, matching
+        // MacPlatform's headless behavior.  Without this, MacDispatcher's
+        // GCD dispatches never execute and the process exits immediately.
+        #[cfg(target_os = "macos")]
+        unsafe {
+            core_foundation::runloop::CFRunLoopRun();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // On non-macOS, park the thread indefinitely. The foreground
+            // executor uses a polling dispatcher that doesn't require a
+            // run loop, so parking is sufficient to keep the process alive.
+            std::thread::park();
+        }
     }
 
-    fn quit(&self) {}
+    fn quit(&self) {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            core_foundation::runloop::CFRunLoopStop(core_foundation::runloop::CFRunLoopGetMain());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Unpark would need the main thread handle, which we don't store.
+            // For now, quit on non-macOS is a no-op (process exits via signal).
+        }
+    }
 
     fn restart(&self, _binary_path: Option<PathBuf>) {}
 
