@@ -10,6 +10,8 @@
 
 use crate::{Bounds, Pixels, Point, Size};
 use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
+use crate::{Hsla, Rgba};
 use std::ops::Range;
 
 /// Unique identifier for a node in the display tree.
@@ -650,6 +652,130 @@ impl DisplayTreeBuilder {
     fn add_leaf(&mut self, node: DisplayNode) {
         if let Some(parent) = self.node_stack.last_mut() {
             parent.children.push(node);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conversion helpers: GPUI types → DisplayTree types
+// ---------------------------------------------------------------------------
+
+impl DisplayColor {
+    /// Convert from GPUI's Hsla color.
+    pub fn from_hsla(hsla: crate::Hsla) -> Self {
+        let rgba: crate::Rgba = hsla.into();
+        Self {
+            r: rgba.r,
+            g: rgba.g,
+            b: rgba.b,
+            a: rgba.a,
+        }
+    }
+}
+
+impl DisplayStyle {
+    /// Convert from a resolved GPUI `Style`.
+    pub fn from_gpui_style(style: &crate::Style) -> Self {
+        Self {
+            display: DisplayLayoutStyle::from_gpui_style(style),
+            visual: DisplayVisualStyle::from_gpui_style(style),
+            text: style.text.color.map(|color| DisplayTextStyle {
+                color: Some(DisplayColor::from_hsla(color)),
+                font_family: None,
+                font_size: None,
+                font_weight: None,
+                font_style: None,
+                line_height: None,
+            }),
+        }
+    }
+}
+
+impl DisplayLayoutStyle {
+    fn from_gpui_style(style: &crate::Style) -> Self {
+        Self {
+            display: Some(format!("{:?}", style.display)),
+            flex_direction: Some(format!("{:?}", style.flex_direction)),
+            flex_grow: if style.flex_grow != 0.0 { Some(style.flex_grow) } else { None },
+            flex_shrink: if style.flex_shrink != 1.0 { Some(style.flex_shrink) } else { None },
+            width: DisplayLength::from_gpui_length(&style.size.width),
+            height: DisplayLength::from_gpui_length(&style.size.height),
+            min_width: DisplayLength::from_gpui_length(&style.min_size.width),
+            max_width: DisplayLength::from_gpui_length(&style.max_size.width),
+            min_height: DisplayLength::from_gpui_length(&style.min_size.height),
+            max_height: DisplayLength::from_gpui_length(&style.max_size.height),
+            padding: Some([
+                DisplayLength::from_gpui_definite_length(&style.padding.top),
+                DisplayLength::from_gpui_definite_length(&style.padding.right),
+                DisplayLength::from_gpui_definite_length(&style.padding.bottom),
+                DisplayLength::from_gpui_definite_length(&style.padding.left),
+            ]),
+            margin: None,
+            gap: None,
+            align_items: style.align_items.map(|v| format!("{:?}", v)),
+            justify_content: style.justify_content.map(|v| format!("{:?}", v)),
+            position: Some(format!("{:?}", style.position)),
+            overflow_x: Some(format!("{:?}", style.overflow.x)),
+            overflow_y: Some(format!("{:?}", style.overflow.y)),
+        }
+    }
+}
+
+impl DisplayLength {
+    fn from_gpui_length(length: &crate::Length) -> Option<Self> {
+        match length {
+            crate::Length::Definite(d) => Self::from_gpui_definite_length_opt(d),
+            crate::Length::Auto => Some(DisplayLength::Auto),
+        }
+    }
+
+    fn from_gpui_definite_length(d: &crate::DefiniteLength) -> Self {
+        Self::from_gpui_definite_length_opt(d).unwrap_or(DisplayLength::Px(0.0))
+    }
+
+    fn from_gpui_definite_length_opt(d: &crate::DefiniteLength) -> Option<Self> {
+        match d {
+            crate::DefiniteLength::Absolute(crate::AbsoluteLength::Pixels(px)) => {
+                Some(DisplayLength::Px(px.0))
+            }
+            crate::DefiniteLength::Absolute(crate::AbsoluteLength::Rems(rems)) => {
+                Some(DisplayLength::Px(rems.0 * 16.0))
+            }
+            crate::DefiniteLength::Fraction(f) => Some(DisplayLength::Percent(*f * 100.0)),
+        }
+    }
+}
+
+fn absolute_length_to_f32(len: &crate::AbsoluteLength) -> f32 {
+    match len {
+        crate::AbsoluteLength::Pixels(px) => px.0,
+        crate::AbsoluteLength::Rems(rems) => rems.0 * 16.0,
+    }
+}
+
+impl DisplayVisualStyle {
+    fn from_gpui_style(style: &crate::Style) -> Self {
+        Self {
+            background: style.background.as_ref().and_then(|fill| match fill {
+                crate::Fill::Color(bg) => Some(DisplayColor::from_hsla(bg.solid)),
+            }),
+            border_color: style.border_color.map(DisplayColor::from_hsla),
+            border_widths: Some([
+                absolute_length_to_f32(&style.border_widths.top),
+                absolute_length_to_f32(&style.border_widths.right),
+                absolute_length_to_f32(&style.border_widths.bottom),
+                absolute_length_to_f32(&style.border_widths.left),
+            ]),
+            corner_radii: Some([
+                absolute_length_to_f32(&style.corner_radii.top_left),
+                absolute_length_to_f32(&style.corner_radii.top_right),
+                absolute_length_to_f32(&style.corner_radii.bottom_right),
+                absolute_length_to_f32(&style.corner_radii.bottom_left),
+            ]),
+            box_shadows: Vec::new(),
+            opacity: style.opacity.filter(|&o| o < 1.0),
+            cursor: style.mouse_cursor.map(|c| format!("{:?}", c)),
+            visible: style.visibility != crate::Visibility::Hidden,
         }
     }
 }
