@@ -1,7 +1,7 @@
 # Zed Web -- Element Tree Sync
 
 **Branch:** `feature/web-view`
-**Last updated:** 2026-02-18
+**Last updated:** 2026-02-19
 
 ## Architecture
 
@@ -42,17 +42,20 @@ Server (native)                          Browser (WASM + GPUI)
 | `a9d6104699` | StreamingWindow: PlatformWindow impl, frame channel, input injection |
 | `3a93d4f8d7` | Frame pipeline: Window::draw() finalizes DisplayTree and sends through StreamingWindow |
 | `102dd1d9b3` | StreamingPlatform: full Platform impl with MacTextSystem, MacDispatcher, AppContext::streaming() entry point |
+| `5700a49dd4` | zed_web: WASM browser client crate -- WebSocket connection, RemoteView hydrating DisplayTree into GPUI elements, index.html host page. Streaming module gated behind `not(wasm32)`. |
 
 ### Remaining
 
 - [ ] **zed_web server binary** -- external crate that boots GPUI via `AppContext::streaming()`, opens a Zed workspace, runs WebSocket server consuming frame_rx. The GPUI infra is done; this is the application-level wiring.
-- [ ] **Browser client (WASM + GPUI)** -- receives WireFrames, deserializes DisplayTree, hydrates into real GPUI elements, runs Taffy layout + paint locally. Builds on GPUI's existing `web` platform module (`cfg(target_arch = "wasm32")`). This is the heaviest piece -- needs a hydration layer that converts DisplayNode tree into GPUI element calls.
 - [ ] **Additional capture hooks** -- Image, SVG, Anchored, Canvas, List (variable-height). Current hooks cover Container, Text, UniformList which handles the bulk of the UI.
 - [ ] **Background serialization** -- move postcard serialization off the render thread. Current WireFrame::serialize() is synchronous; needs to happen on background executor to preserve frame budget.
 - [ ] **Delta optimization** -- diff_display_trees() exists but isn't wired into the transport. First pass sends full snapshots; delta encoding reduces bandwidth by ~90% for typical keystrokes.
 - [ ] **Action replay** -- server receives DisplayAction, maps node_id back to the original element's closure via a retained ID->closure map, replays the interaction into GPUI's event system.
 - [ ] **Font metrics sync** -- browser needs server's font metrics for accurate Taffy layout. Either ship font data or use a metrics table synced at connection time.
 - [ ] **Text run extraction** -- StyledText hook currently captures text content but not style runs (color, weight, underline per character). Needs access to the resolved TextRuns from TextLayout.
+- [ ] **Web platform rendering backend** -- GPUI's `WebWindow::draw()` is currently a no-op. Needs to paint Scene to Canvas2D or WebGL for zed_web to produce visible output in the browser.
+- [ ] **Delta application in RemoteView** -- `apply_frame()` currently requests a full snapshot when receiving a delta. Needs real delta application for bandwidth efficiency.
+- [ ] **Interaction forwarding** -- RemoteView needs InteractionFlags-based event handlers that generate DisplayActions and send them to the server via Connection.
 
 ## Key Files
 
@@ -70,6 +73,10 @@ Server (native)                          Browser (WASM + GPUI)
 | `crates/gpui/src/elements/text.rs` | Text leaf capture hook in StyledText::prepaint() |
 | `crates/gpui/src/elements/uniform_list.rs` | UniformList kind override in prepaint closure |
 | `crates/gpui/Cargo.toml` | `headless-web = ["postcard"]` feature definition |
+| `crates/zed_web/src/lib.rs` | WASM entry point: boots GPUI Application, opens window with RemoteView, spawns async frame bridge from WebSocket to view |
+| `crates/zed_web/src/connection.rs` | WebSocket via web-sys with Closure callbacks, WireFrame deserialize on message, postcard serialize on send |
+| `crates/zed_web/src/remote_view.rs` | GPUI Render view hydrating DisplayTree into elements with server-computed absolute positioning |
+| `crates/zed_web/index.html` | Browser host page with Tokyo Night theme, loads WASM via ES module, `?server=` URL param for WebSocket endpoint |
 
 ## Wire Protocol
 
