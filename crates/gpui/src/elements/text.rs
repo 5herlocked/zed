@@ -295,7 +295,14 @@ impl Element for StyledText {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        self.layout.prepaint(bounds, &self.text)
+        self.layout.prepaint(bounds, &self.text);
+
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = _window.display_tree_builder.as_mut() {
+                builder.push_text_leaf(self.text.to_string(), bounds);
+            }
+        }
     }
 
     fn paint(

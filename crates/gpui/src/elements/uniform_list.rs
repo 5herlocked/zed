@@ -374,6 +374,26 @@ impl Element for UniformList {
             window,
             cx,
             |_style, mut scroll_offset, hitbox, window, cx| {
+                #[cfg(feature = "headless-web")]
+                {
+                    if let Some(builder) = window.display_tree_builder.as_mut() {
+                        let visible_range = {
+                            let first = (-(scroll_offset.y + padding.top) / item_height)
+                                .floor() as usize;
+                            let last = ((-scroll_offset.y + padded_bounds.size.height)
+                                / item_height)
+                                .ceil() as usize;
+                            first..std::cmp::min(last, self.item_count)
+                        };
+                        builder.set_current_kind(crate::display_tree::DisplayNodeKind::UniformList {
+                            total_items: self.item_count,
+                            item_height: item_height.0,
+                            visible_range,
+                            scroll_offset: scroll_offset.y.0,
+                        });
+                    }
+                }
+
                 let y_flipped = if let Some(scroll_handle) = &self.scroll_handle {
                     let scroll_state = scroll_handle.0.borrow();
                     scroll_state.y_flipped

@@ -670,6 +670,15 @@ impl DisplayTreeBuilder {
         }
     }
 
+    /// Replace the kind of the current (top-of-stack) node.
+    /// Used when a higher-level element (e.g. UniformList) wraps Interactivity
+    /// which pushes a generic Container, but the outer element needs a specialized kind.
+    pub fn set_current_kind(&mut self, kind: DisplayNodeKind) {
+        if let Some(node) = self.node_stack.last_mut() {
+            node.kind = kind;
+        }
+    }
+
     /// Pop the current node off the stack, making it a child of the parent.
     /// If this is the last node on the stack, it becomes the root.
     pub fn pop_node(&mut self) {
@@ -698,6 +707,25 @@ impl DisplayTreeBuilder {
         if let Some(parent) = self.node_stack.last_mut() {
             parent.children.push(node);
         }
+    }
+
+    /// Push a text leaf node as a child of the current container.
+    /// Convenience wrapper used by StyledText's capture hook.
+    pub fn push_text_leaf(
+        &mut self,
+        content: String,
+        bounds: Bounds<Pixels>) {
+        let node = DisplayNode {
+            id: self.next_node_id(),
+            element_id: None,
+            kind: DisplayNodeKind::Text { content, runs: Vec::new() },
+            style: DisplayStyle::default(),
+            bounds: Some(bounds),
+            content_size: None,
+            interactions: InteractionFlags::NONE,
+            children: Vec::new(),
+        };
+        self.add_leaf(node);
     }
 }
 
