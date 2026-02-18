@@ -955,6 +955,8 @@ pub struct Window {
     pub(crate) client_inset: Option<Pixels>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
+    #[cfg(feature = "headless-web")]
+    pub(crate) display_tree_builder: Option<crate::display_tree::DisplayTreeBuilder>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1439,6 +1441,8 @@ impl Window {
             image_cache_stack: Vec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
+            #[cfg(feature = "headless-web")]
+            display_tree_builder: None,
         })
     }
 
@@ -2179,9 +2183,30 @@ impl Window {
         if let Some(input_handler) = self.platform_window.take_input_handler() {
             self.rendered_frame.input_handlers.push(Some(input_handler));
         }
+
+        // Create a DisplayTreeBuilder for this frame if headless-web is active.
+        #[cfg(feature = "headless-web")]
+        {
+            static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let frame_id = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.display_tree_builder = Some(crate::display_tree::DisplayTreeBuilder::new(
+                frame_id,
+                self.viewport_size,
+            ));
+        }
+
         if !cx.mode.skip_drawing() {
             self.draw_roots(cx);
         }
+
+        // Finalize the display tree after all rendering is complete.
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(tree) = self.display_tree_builder.take().and_then(|b| b.finish()) {
+                self.platform_window.send_display_tree(tree);
+            }
+        }
+
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();
 

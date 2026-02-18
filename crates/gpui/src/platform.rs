@@ -549,6 +549,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+
+    /// Ship a captured display tree to the transport layer.
+    /// Only StreamingWindow provides a real implementation; all other
+    /// platform windows are no-ops.
+    #[cfg(feature = "headless-web")]
+    fn send_display_tree(&self, _tree: crate::display_tree::DisplayTree) {}
+
     fn is_subpixel_rendering_supported(&self) -> bool;
 
     // macOS specific methods

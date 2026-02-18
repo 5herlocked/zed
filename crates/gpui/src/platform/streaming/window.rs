@@ -273,6 +273,11 @@ impl PlatformWindow for StreamingWindow {
         // Window::draw() handles serialization to the transport layer.
     }
 
+    #[cfg(feature = "headless-web")]
+    fn send_display_tree(&self, tree: crate::display_tree::DisplayTree) {
+        let _ = self.0.lock().frame_tx.try_send(tree);
+    }
+
     fn sprite_atlas(&self) -> sync::Arc<dyn PlatformAtlas> {
         self.0.lock().sprite_atlas.clone()
     }
