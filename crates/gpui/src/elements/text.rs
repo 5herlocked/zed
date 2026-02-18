@@ -54,7 +54,14 @@ impl Element for &'static str {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self)
+        text_layout.prepaint(bounds, self);
+
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = _window.display_tree_builder.as_mut() {
+                builder.push_text_leaf(self.to_string(), bounds);
+            }
+        }
     }
 
     fn paint(
@@ -128,7 +135,14 @@ impl Element for SharedString {
         _window: &mut Window,
         _cx: &mut App,
     ) {
-        text_layout.prepaint(bounds, self.as_ref())
+        text_layout.prepaint(bounds, self.as_ref());
+
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = _window.display_tree_builder.as_mut() {
+                builder.push_text_leaf(self.to_string(), bounds);
+            }
+        }
     }
 
     fn paint(

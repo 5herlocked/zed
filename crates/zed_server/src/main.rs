@@ -152,15 +152,12 @@ async fn frame_bridge(
     frame_rx: smol::channel::Receiver<DisplayTree>,
     broadcast_tx: broadcast::Sender<Bytes>,
 ) {
-    use gpui::display_tree::WireFrame;
-
     loop {
         match frame_rx.recv().await {
             Ok(tree) => {
-                let wire = WireFrame::Snapshot(tree);
-                match wire.serialize() {
-                    Ok(bytes) => {
-                        let _ = broadcast_tx.send(Bytes::from(bytes));
+                match serde_json::to_vec(&tree) {
+                    Ok(json) => {
+                        let _ = broadcast_tx.send(Bytes::from(json));
                     }
                     Err(e) => error!("frame serialization failed: {e}"),
                 }

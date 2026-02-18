@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Zed Web Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; }
+    #status {
+      position: fixed; top: 8px; right: 12px;
+      font: 12px monospace; color: #565f89; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="status">connecting...</div>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const status = document.getElementById('status');
+    const dpr = window.devicePixelRatio || 1;
+
+    function resize() {
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.scale(dpr, dpr);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    function colorToCSS(c) {
+      if (!c) return null;
+      const r = Math.round(c.r * 255);
+      const g = Math.round(c.g * 255);
+      const b = Math.round(c.b * 255);
+      return `rgba(${r},${g},${b},${c.a.toFixed(3)})`;
+    }
+
+    function drawRoundedRect(x, y, w, h, radii) {
+      const [tl, tr, br, bl] = radii || [0, 0, 0, 0];
+      ctx.beginPath();
+      ctx.moveTo(x + tl, y);
+      ctx.lineTo(x + w - tr, y);
+      if (tr) ctx.arcTo(x + w, y, x + w, y + tr, tr);
+      else ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w, y + h - br);
+      if (br) ctx.arcTo(x + w, y + h, x + w - br, y + h, br);
+      else ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x + bl, y + h);
+      if (bl) ctx.arcTo(x, y + h, x, y + h - bl, bl);
+      else ctx.lineTo(x, y + h);
+      ctx.lineTo(x, y + tl);
+      if (tl) ctx.arcTo(x, y, x + tl, y, tl);
+      else ctx.lineTo(x, y);
+      ctx.closePath();
+    }
+
+    function drawShadows(x, y, w, h, radii, shadows) {
+      for (const s of shadows) {
+        ctx.save();
+        ctx.shadowColor = colorToCSS(s.color) || 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = s.blur;
+        ctx.shadowOffsetX = s.offset_x;
+        ctx.shadowOffsetY = s.offset_y;
+        drawRoundedRect(x, y, w, h, radii);
+        ctx.fillStyle = 'rgba(0,0,0,1)';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function resolveTextStyle(node, inherited) {
+      const t = node.style?.text;
+      return {
+        fontFamily: t?.font_family || inherited.fontFamily || 'sans-serif',
+        fontSize: t?.font_size || inherited.fontSize || 14,
+        fontWeight: t?.font_weight || inherited.fontWeight || 400,
+        fontStyle: t?.font_style || inherited.fontStyle || 'normal',
+        color: t?.color ? colorToCSS(t.color) : inherited.color || '#c0caf5',
+        lineHeight: t?.line_height || inherited.lineHeight || null,
+      };
+    }
+
+    function drawNode(node, inherited) {
+      if (!node) return;
+      const vis = node.style?.visual;
+      if (vis && vis.visible === false) return;
+
+      const b = node.bounds;
+      if (!b) {
+        // No bounds -- just recurse children with inherited text style
+        const ts = resolveTextStyle(node, inherited);
+        for (const child of (node.children || [])) drawNode(child, ts);
+        return;
+      }
+
+      const x = b.origin.x;
+      const y = b.origin.y;
+      const w = b.size.width;
+      const h = b.size.height;
+      const radii = vis?.corner_radii;
+
+      // Opacity
+      if (vis?.opacity != null && vis.opacity < 1) {
+        ctx.save();
+        ctx.globalAlpha *= vis.opacity;
+      }
+
+      // Box shadows
+      if (vis?.box_shadows?.length) {
+        drawShadows(x, y, w, h, radii, vis.box_shadows);
+      }
+
+      // Background fill
+      const bg = colorToCSS(vis?.background);
+      if (bg) {
+        drawRoundedRect(x, y, w, h, radii);
+        ctx.fillStyle = bg;
+        ctx.fill();
+      }
+
+      // Border
+      const bw = vis?.border_widths;
+      const bc = colorToCSS(vis?.border_color);
+      if (bw && bc) {
+        const avgWidth = (bw[0] + bw[1] + bw[2] + bw[3]) / 4;
+        if (avgWidth > 0) {
+          drawRoundedRect(x, y, w, h, radii);
+          ctx.strokeStyle = bc;
+          ctx.lineWidth = avgWidth;
+          ctx.stroke();
+        }
+      }
+
+      // Clip children to bounds
+      ctx.save();
+      drawRoundedRect(x, y, w, h, radii);
+      ctx.clip();
+
+      const ts = resolveTextStyle(node, inherited);
+
+      // Text content
+      const kind = node.kind;
+      if (kind === 'Text' || (kind && typeof kind === 'object' && kind.Text)) {
+        const text = kind.Text || kind;
+        const content = text.content;
+        const runs = text.runs || [];
+
+        if (content) {
+          let cursorX = x;
+          const baseline = y + (ts.fontSize * 0.8);
+
+          if (runs.length === 0) {
+            ctx.font = `${ts.fontStyle} ${ts.fontWeight} ${ts.fontSize}px ${ts.fontFamily}`;
+            ctx.fillStyle = ts.color;
+            ctx.textBaseline = 'top';
+            ctx.fillText(content, x, y + 2);
+          } else {
+            ctx.textBaseline = 'top';
+            for (const run of runs) {
+              const rColor = run.color ? colorToCSS(run.color) : ts.color;
+              const rSize = run.font_size || ts.fontSize;
+              const rWeight = run.font_weight || ts.fontWeight;
+              const rFamily = run.font_family || ts.fontFamily;
+              ctx.font = `${rWeight} ${rSize}px ${rFamily}`;
+              ctx.fillStyle = rColor;
+              const slice = content.substring(run.start, run.end);
+              ctx.fillText(slice, cursorX, y + 2);
+              cursorX += ctx.measureText(slice).width;
+            }
+          }
+        }
+      }
+
+      // InteractiveText
+      if (kind && typeof kind === 'object' && kind.InteractiveText) {
+        const text = kind.InteractiveText;
+        if (text.content) {
+          ctx.font = `${ts.fontWeight} ${ts.fontSize}px ${ts.fontFamily}`;
+          ctx.fillStyle = ts.color;
+          ctx.textBaseline = 'top';
+          ctx.fillText(text.content, x, y + 2);
+        }
+      }
+
+      // Recurse children
+      for (const child of (node.children || [])) {
+        drawNode(child, ts);
+      }
+
+      ctx.restore(); // clip
+
+      if (vis?.opacity != null && vis.opacity < 1) {
+        ctx.restore(); // opacity
+      }
+    }
+
+    function paintFrame(tree) {
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+      if (tree.root) {
+        drawNode(tree.root, {});
+      }
+      ctx.restore();
+    }
+
+    // --- WebSocket ---
+    let frameCount = 0;
+    let lastTime = performance.now();
+
+    const ws = new WebSocket('ws://127.0.0.1:8080');
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => { status.textContent = 'connected'; };
+
+    ws.onmessage = (event) => {
+      frameCount++;
+      const now = performance.now();
+      const delta = now - lastTime;
+      lastTime = now;
+
+      try {
+        const text = new TextDecoder().decode(event.data);
+        const tree = JSON.parse(text);
+        paintFrame(tree);
+
+        if (frameCount % 30 === 0) {
+          const bytes = event.data.byteLength;
+          status.textContent = `frame #${frameCount} | ${bytes}B | ${delta.toFixed(0)}ms`;
+        }
+      } catch (e) {
+        status.textContent = `parse error: ${e.message}`;
+      }
+    };
+
+    ws.onerror = () => { status.textContent = 'error'; };
+    ws.onclose = (e) => { status.textContent = `closed (${e.code})`; };
+  </script>
+</body>
+</html>

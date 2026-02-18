@@ -21531,6 +21531,7 @@ dependencies = [
  "gpui_tokio",
  "log",
  "postcard",
+ "serde_json",
  "settings",
  "smol",
  "tokio",
