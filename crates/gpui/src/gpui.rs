@@ -17,6 +17,8 @@ mod bounds_tree;
 mod color;
 /// The default colors used by GPUI.
 pub mod colors;
+#[cfg(feature = "headless-web")]
+pub mod display_tree;
 mod element;
 mod elements;
 mod executor;

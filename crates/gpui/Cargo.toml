@@ -28,6 +28,7 @@ test-support = [
 ]
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
+headless-web = []
 runtime_shaders = []
 wayland = [
     "bitflags",

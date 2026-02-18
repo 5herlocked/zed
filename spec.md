@@ -1,244 +1,118 @@
-# Web View State Architecture — Implementation Spec
+# Zed Web — Element Tree Sync Architecture
 
 ## Problem Statement
 
-Phase 1 (scene streaming) proved the transport layer works but is fundamentally a "dumb terminal" — every interaction requires a server round-trip, the browser has no semantic understanding of the UI, and there's no input path. Phase 2 replaces this with two layers:
+Zed Web puts the full Zed editor experience in a browser without rewriting views or compiling the entire native crate graph to WASM. The architecture splits responsibilities: the server runs full native Zed (real views, real entities, real LSP/git/filesystem) and the browser handles layout, paint, and local interactions.
 
-1. **WebPlatform**: GPUI compiled to WASM so the full view/element/layout/paint/input stack runs natively in the browser.
-2. **Entity Sync**: Server-side entity state (buffers, worktrees, workspace layout) mirrored to the browser-side GPUI instance via the existing `HeadlessProject` protocol over WebSocket.
+The key insight is the **Element Tree Sync** pattern: during GPUI's render pipeline, the server produces a serializable `DisplayTree` — a parallel representation of the element tree capturing styles, text content, tree structure, and interaction capabilities. This tree is shipped to the browser over WebSocket, where the browser's GPUI instance hydrates it into real elements, runs Taffy layout locally, and paints locally. Scroll, resize, and hover are zero-latency. Content changes (open file, search, save) round-trip to the server, which re-renders and sends a delta update.
 
-The goal is a browser client that can connect to a running Zed server, receive worktree and buffer state, and render a file tree — with a diagnostic tool to observe the state sync wire protocol.
+### Why Element Tree Sync?
 
-## Scope
+We evaluated four approaches:
 
-Both layers, built incrementally. The minimum viable outcome is:
+1. **Entity sync + WASM views** (Phase 2): Browser has lightweight entity stores + custom views compiled to WASM. Rejected because every UI view would need a web-specific rewrite — FileTreeView is 180 lines but the real editor is thousands, plus tabs, panels, search, etc.
 
-- GPUI core compiles to `wasm32-unknown-unknown` with stub platform implementations
-- `HeadlessProject` accepts WebSocket connections alongside Unix socket connections
-- A browser client connects, receives `UpdateWorktree` and `CreateBufferForPeer` messages, and renders a file tree
-- A WebSocket inspector tool logs and visualizes state sync messages
+2. **Scene streaming** (Phase 1 refined): Server renders full Zed, streams raw Scene data (positioned quads, glyphs) to browser. Works (hit 73fps), but every interaction round-trips — typing, scrolling, hovering all need server response. Browser needs a WebGPU/Canvas2D Scene renderer.
 
-## Constraints
+3. **DOM projection**: Server maps GPUI element tree to HTML/CSS DOM. Gets native browser features for free (text rendering, scrolling, accessibility) but loses GPUI's pixel-perfect rendering.
 
-- **Minimal disruption**: Extend existing crates (`remote_server`, `rpc`, `proto`, `gpui`) with feature-gated additions. Existing behavior must be unchanged when the new features are not enabled.
-- **Additive pattern**: Follow the `scene_observer` pattern from Phase 1 — new hooks are feature-gated, new modules are added alongside existing ones, existing code paths are untouched.
-- **Reuse existing protocol**: The browser client is architecturally identical to a native Zed instance connecting to a remote server. It uses the same `Envelope`-based protobuf protocol, the same `AnyProtoClient` abstraction, and the same message handlers.
+4. **Element Tree Sync** (chosen): Server produces a serializable element tree during its normal render passes. Browser hydrates it into real GPUI elements and handles layout/paint/local-input. Best balance of fidelity, latency, and implementation cost. No per-view rewrites. All present and future views work automatically because capture happens at the GPUI framework level.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────┐         ┌─────────────────────────────────┐
-│           Server (Linux)        │         │       Browser (WASM + WebGPU)   │
-│                                 │         │                                 │
-│  ┌───────────┐  ┌────────────┐  │  proto  │  ┌────────────┐  ┌───────────┐ │
-│  │   Zed     │──│ Headless   │──│────────>│──│  Proto     │──│  GPUI     │ │
-│  │   Backend │  │ Project    │  │Envelope │  │  Client    │  │  (WASM)   │ │
-│  │           │  │            │  │  over   │  │  (WASM)    │  │           │ │
-│  │  LSP,Git, │  │  Buffers,  │  │  WS     │  │            │  │  Layout,  │ │
-│  │  FS,DAP   │  │  Worktrees │  │<────────│──│  Actions   │  │  Paint,   │ │
-│  │           │  │            │  │  proto  │  │  + Events  │  │  Render   │ │
-│  └───────────┘  └────────────┘  │         │  └────────────┘  └───────────┘ │
-└─────────────────────────────────┘         └─────────────────────────────────┘
-                                    ▲
-                                    │
-                              ┌─────┴──────┐
-                              │  Inspector │
-                              │  (CLI/Web) │
-                              └────────────┘
+┌────────────────────────────────────┐        ┌─────────────────────────────────┐
+│         Server (native Zed)        │        │       Browser (GPUI WASM)       │
+│                                    │        │                                 │
+│  ┌──────────┐  ┌───────────────┐   │  WS    │  ┌──────────┐  ┌────────────┐  │
+│  │ Real     │──│ GPUI render   │   │  proto  │  │ Hydrate  │──│ GPUI       │  │
+│  │ Entities │  │ pipeline      │───│───────>│──│ Display  │  │ Taffy      │  │
+│  │ (native) │  │               │   │  tree   │  │ Tree     │  │ Layout +   │  │
+│  │          │  │ + DisplayTree │   │        │  │          │  │ Paint      │  │
+│  │ Project, │  │   capture     │   │<───────│──│ Forward  │  │            │  │
+│  │ Buffers, │  │   (headless-  │   │ action  │  │ Actions  │  │ Local:     │  │
+│  │ LSP, Git │  │    web feat)  │   │ events  │  │          │  │ scroll,    │  │
+│  └──────────┘  └───────────────┘   │        │  └──────────┘  │ hover,     │  │
+│                                    │        │                │ resize     │  │
+└────────────────────────────────────┘        └─────────────────┴────────────┘
 ```
 
-### Key Integration Points
+### How It Works
 
-1. **Server transport**: The server currently accepts connections via Unix sockets (`UnixListener` in `crates/remote_server/src/server.rs`). A WebSocket listener is added alongside it, producing the same `(incoming_tx, outgoing_rx)` channel pair that feeds into `RemoteClient::proto_client_from_channels`. The `HeadlessProject` doesn't know or care about the transport.
+1. **Server render pass**: GPUI calls `render()` on all views (Workspace, ProjectPanel, Editor, etc.) as normal. The real element tree goes through the standard request_layout → prepaint → paint pipeline.
 
-2. **Protocol reuse**: The browser receives the same `Envelope` messages that a native Zed client receives: `UpdateWorktree`, `CreateBufferForPeer`, `UpdateBuffer`, `UpdateDiagnosticSummary`, etc. No new proto messages are needed for the initial milestone.
+2. **DisplayTree capture**: Gated behind `#[cfg(feature = "headless-web")]`, capture hooks in the render pipeline build a `DisplayTree` alongside the real element tree. This captures element types, resolved styles (already serializable), text content + style runs, interaction flags, and tree structure. No extra traversal — hooks piggyback on the three existing walks.
 
-3. **Browser-side hydration**: The browser creates a `Project` entity (or a lightweight equivalent) that processes incoming proto messages the same way `Project::remote()` does — creating `WorktreeStore`, `BufferStore`, etc. from the proto stream.
+3. **Serialization (off-thread)**: After paint completes, the finished DisplayTree is handed to a background thread that diffs it against the previous frame, serializes the delta, and sends it over WebSocket. Render thread budget is unaffected.
 
-4. **WebPlatform**: A new `Platform` trait implementation for `wasm32-unknown-unknown` that provides the minimum needed to run GPUI: a foreground executor (rAF-based), a stub text system (upgraded later to HarfBuzz+Canvas2D), and a `WebWindow` backed by a `<canvas>` element with WebGPU.
+4. **Browser hydration**: The browser receives the DisplayTree, constructs real GPUI elements from it (div with these styles, text with these runs, etc.), and runs Taffy layout + paint locally. Scroll, resize, hover are handled browser-side with zero latency.
 
-## Detailed Requirements
+5. **Action forwarding**: Interactive elements carry `InteractionFlags` indicating what events they handle. When the user clicks/types/scrolls, the browser sends `(node_id, element_id, event_type, event_data)` to the server. The server maps the element ID back to the real closure registered during render, dispatches the event, re-renders, and sends the updated DisplayTree delta.
 
-### R1: GPUI WASM Compilation
+### Performance
 
-Add a `web` feature flag to `crates/gpui/Cargo.toml`. When targeting `wasm32-unknown-unknown` with this feature:
+- **When headless-web is off**: Zero impact. `#[cfg(feature = "headless-web")]` means capture code is dead-code-eliminated. Binary is identical to today's desktop Zed.
+- **When active**: Capture piggybacks on existing render walks. Per-element cost is a small struct copy (style + text content). SharedString clones are refcount bumps. ~0.1-0.5ms overhead on the render thread for a typical frame. Serialization and diff run on background thread.
+- **Delta encoding**: Most frames only change a small part of the tree (cursor blink, hover state, scroll offset). Diffs are small.
+- **Target**: 120fps on the render thread.
 
-- Platform-specific modules (`mac`, `linux`, `windows`) are excluded via `cfg`
-- A new `platform/web/` module provides stub/minimal implementations of `Platform`, `PlatformWindow`, `PlatformDisplay`, `PlatformTextSystem`, `PlatformAtlas`, and `PlatformDispatcher`
-- Dependencies that don't compile to WASM (`resvg`, `font-kit`, `cosmic-text`, `calloop`, `smol`, OS-specific crates) are gated behind `cfg(not(target_arch = "wasm32"))` or made optional
-- `cargo build --target wasm32-unknown-unknown -p gpui --features web --no-default-features` succeeds
+## Scope
 
-The WebPlatform implementations:
+### In Scope
 
-| Trait | Implementation |
-|---|---|
-| `Platform` | `WebPlatform` — rAF render loop, single virtual display, `navigator.clipboard` |
-| `PlatformWindow` | `WebWindow` — `<canvas>` + WebGPU context, DOM event translation to `PlatformInput` |
-| `PlatformTextSystem` | `StubWebTextSystem` initially (returns fixed metrics), upgraded to HarfBuzz+Canvas2D later |
-| `PlatformAtlas` | Reuse `StreamingAtlas` (CPU-only, already exists) or a new WebGPU-backed atlas |
-| `PlatformDispatcher` | `wasm-bindgen-futures::spawn_local` for foreground, Web Workers for background |
+- `headless-web` compile-time feature on GPUI
+- `DisplayTree` data structure: types, builder, delta encoding
+- Capture hooks in GPUI's render pipeline (request_layout, prepaint, paint)
+- DisplayTree serialization wire format (serde + binary encoding)
+- Action forwarding protocol (browser → server → dispatch → re-render → delta)
+- `zed-web` server binary: full Zed with StreamingWindow, DisplayTree capture, WebSocket transport
+- `zed_web` browser crate: WASM, DisplayTree hydration, GPUI layout/paint, action forwarding
+- Functional GPUI web platform: WebDispatcher (rAF), WebTextSystem (Canvas2D), WebWindow (canvas)
 
-### R2: WebSocket Transport for HeadlessProject
+### Out of Scope (deferred)
 
-Add a `web-server` feature to `crates/remote_server/Cargo.toml`. When enabled:
+- Canvas element server-side rasterization (fallback: skip in first pass)
+- Drag-and-drop across browser/OS boundary
+- WebGPU-accelerated rendering on browser side (Canvas2D first)
+- Offline/cached mode
+- Multi-window support in browser
+- Authentication/encryption on the WebSocket connection
 
-- A WebSocket listener (using `async-tungstenite`) binds alongside the existing Unix socket listeners
-- Incoming WebSocket connections are upgraded and produce `(incoming_tx, outgoing_rx)` channel pairs
-- These channels feed into `RemoteClient::proto_client_from_channels` — the same path Unix sockets use
-- The `HeadlessProject` is created and wired up identically regardless of transport
-- Configurable via `ZED_WEB_SERVER_PORT` environment variable (default: 8080)
+## Constraints
 
-The WebSocket framing wraps `Envelope` protobuf messages with the same length-prefix format used by `read_message`/`write_message` in `crates/remote/src/protocol.rs`, adapted for WebSocket binary messages (the length prefix is implicit in WebSocket framing, so each binary message is one `Envelope`).
+- **Minimal disruption to GPUI**: All additions are feature-gated behind `headless-web`. Default builds are unaffected. No modifications to existing render behavior when the feature is off.
+- **No per-view changes**: DisplayTree capture happens in the framework's render pipeline, not in individual view implementations. All views work automatically.
+- **Reuse existing protocol infrastructure**: WebSocket transport from Phase 1, protobuf Envelope framing from rpc crate.
+- **Server needs no GPU/display**: The entire render pipeline up to Scene is CPU computation. DisplayTree capture intercepts before draw(). A bare Linux box or container works.
 
-### R3: Browser-Side Proto Client
+## Key Files
 
-A WASM module that:
+### New
+- `crates/gpui/src/display_tree.rs` — DisplayTree types, builder, diff, action forwarding types
+- `crates/zed_web/` — Browser WASM crate (hydration, action forwarding, GPUI web platform)
+- `crates/zed-web/` — Server binary (full Zed + StreamingWindow + WebSocket)
 
-- Connects to the server's WebSocket endpoint
-- Deserializes incoming `Envelope` messages (protobuf)
-- Dispatches them to registered handlers (mirroring `ChannelClient` behavior)
-- Sends outgoing `Envelope` messages (requests, buffer edits)
+### Modified
+- `crates/gpui/Cargo.toml` — `headless-web` feature flag
+- `crates/gpui/src/gpui.rs` — `display_tree` module (cfg-gated)
+- `crates/gpui/src/elements/div.rs` — Capture hooks in Element impl (cfg-gated)
+- `crates/gpui/src/elements/text.rs` — Capture hooks for text elements
+- `crates/gpui/src/elements/uniform_list.rs` — Capture hooks for virtualized lists
+- `crates/gpui/src/window.rs` — DisplayTreeBuilder held on Window, handed off after paint
+- `crates/gpui/src/platform/web/` — Functional web platform implementations
 
-This is the WASM equivalent of `ChannelClient` in `crates/remote/src/remote_client.rs`. It implements `AnyProtoClient` so the browser-side `Project` entity can use it identically to how native Zed uses the SSH-based proto client.
-
-### R4: Browser-Side Project Hydration
-
-The browser creates entities from the proto stream:
-
-1. `WorktreeStore::remote()` — receives `UpdateWorktree` messages, builds the file tree
-2. `BufferStore::remote()` — receives `CreateBufferForPeer`, `UpdateBuffer` messages
-3. A minimal `Workspace` view that renders the file tree from `WorktreeStore`
-
-For the initial milestone, only worktree and buffer sync are needed. LSP, git, DAP, terminal, and extensions are deferred.
-
-### R5: WebSocket Inspector Tool
-
-A diagnostic tool that connects to the WebSocket endpoint and logs state sync messages. Two modes:
-
-**CLI mode**: A Rust binary (`web_inspector`) that connects to the WebSocket, deserializes `Envelope` messages, and prints them as structured JSON to stdout. Supports filtering by message type.
-
-**Web mode**: A lightweight HTML page (served alongside the browser client) that displays a live feed of messages with:
-- Message type, sequence number, timestamp
-- Payload summary (e.g., "UpdateWorktree: 15 entries added, 2 removed")
-- Expandable full payload view
-- Message rate and bandwidth counters
-
-The inspector reuses the existing `WebStreamingServer` WebSocket infrastructure from Phase 1, extended to also broadcast proto `Envelope` messages on a separate channel.
-
-### R6: File Tree Rendering
-
-The browser GPUI instance renders a file tree from the synced `WorktreeStore`. This validates the full pipeline:
-
-1. Server sends `UpdateWorktree` with `Entry` list
-2. Browser `WorktreeStore` processes the message
-3. GPUI renders a tree view from the worktree entries
-4. User can expand/collapse directories (local interaction, no server round-trip)
-5. Clicking a file sends `OpenBufferByPath` to the server
-6. Server responds with `CreateBufferForPeer` + `BufferState`
-7. Browser `BufferStore` hydrates the buffer
-
-For the initial milestone, the file tree can be a simplified view (not the full `ProjectPanel`). Rendering buffer content in an editor view is a stretch goal.
-
-## Build Plan
-
-### Step 1: GPUI WASM Compilation Spike
-
-**Goal**: `cargo check --target wasm32-unknown-unknown -p gpui --features web --no-default-features` passes.
-
-- Add `web` feature to `gpui/Cargo.toml`
-- Gate platform modules behind `cfg(not(target_arch = "wasm32"))`
-- Gate OS-specific dependencies behind `cfg(not(target_arch = "wasm32"))`
-- Create `crates/gpui/src/platform/web/` with stub implementations
-- Fix compilation errors iteratively (catalog and fix each one)
-
-**Verification**: `cargo check` succeeds for the WASM target.
-
-### Step 2: WebSocket Transport for HeadlessProject
-
-**Goal**: `HeadlessProject` accepts WebSocket connections and serves proto messages.
-
-- Add `web-server` feature to `remote_server/Cargo.toml`
-- Add WebSocket accept loop in `server.rs` alongside Unix socket loop
-- Bridge WebSocket binary frames to `(mpsc::UnboundedSender<Envelope>, mpsc::UnboundedReceiver<Envelope>)` channels
-- Feed channels into `proto_client_from_channels`
-- Wire up `HeadlessProject` identically to the Unix socket path
-
-**Verification**: A test client (e.g., `websocat`) can connect and receive the initial `Hello` handshake message.
-
-### Step 3: WebSocket Inspector Tool
-
-**Goal**: A CLI tool that connects to the WebSocket and logs proto messages.
-
-- Create `crates/web_inspector/` with a binary that:
-  - Connects to `ws://localhost:8080`
-  - Reads binary WebSocket messages
-  - Decodes `Envelope` protobuf
-  - Prints message type, id, and payload summary as JSON
-- Add filtering flags (`--type UpdateWorktree`, `--verbose`)
-- Add a simple HTML inspector page that does the same in the browser
-
-**Verification**: Run Zed with `ZED_WEB_SERVER_PORT=8080`, connect the inspector, open a file — see `UpdateWorktree` and buffer messages logged.
-
-### Step 4: Browser-Side Proto Client (WASM)
-
-**Goal**: A WASM module that connects to the WebSocket and processes proto messages.
-
-- Create `crates/gpui-web/` (WASM entry point)
-- Implement `WebProtoClient` (WASM equivalent of `ChannelClient`)
-- Connect to WebSocket via `web-sys`
-- Deserialize `Envelope` messages using `prost`
-- Dispatch to registered handlers
-
-**Verification**: Browser console logs decoded proto messages from the server.
-
-### Step 5: Browser-Side Project Hydration + File Tree
-
-**Goal**: Browser renders a file tree from server state.
-
-- Create browser-side `WorktreeStore::remote()` and `BufferStore::remote()` (compile existing Rust code to WASM, or create lightweight equivalents)
-- Create a minimal `FileTreeView` that renders worktree entries
-- Wire up the proto client to feed messages into the stores
-- Render the file tree using GPUI's element system via `WebPlatform`
-
-**Verification**: Open Zed with a project, connect the browser — see the file tree rendered. Expand/collapse directories. Click a file — see buffer state arrive (logged by inspector).
+### Unchanged
+- All existing views (they render normally; capture is transparent)
+- All existing platform backends (mac, linux, windows)
+- All proto definitions (reused as-is for transport)
+- All existing tests
 
 ## Acceptance Criteria
 
-1. **GPUI compiles to WASM**: `cargo check --target wasm32-unknown-unknown -p gpui --features web --no-default-features` succeeds with no errors
-2. **WebSocket transport works**: A WebSocket client can connect to the running Zed server and receive proto `Envelope` messages
-3. **Inspector shows messages**: The CLI inspector tool displays `UpdateWorktree`, `CreateBufferForPeer`, and `UpdateBuffer` messages with readable summaries
-4. **File tree renders in browser**: The browser client displays a file tree matching the server's open project, with expand/collapse working locally
-5. **Existing behavior unchanged**: All existing tests pass. The `web` and `web-server` features are opt-in. Default builds are unaffected.
-6. **Buffer open works**: Clicking a file in the browser file tree triggers `OpenBufferByPath`, and the buffer state arrives and is logged by the inspector
-
-## Completion Criteria (Ralph Loop)
-
-The implementation is complete when:
-
-- [ ] Acceptance criteria 1-6 all pass
-- [ ] The inspector tool is functional and demonstrates the state sync pipeline
-- [ ] Code is committed on the `feature/web-view` branch with clean history
-- [ ] No regressions in existing functionality (verified by running relevant tests)
-
-## Files to Create/Modify
-
-### New files
-- `crates/gpui/src/platform/web/` — WebPlatform module (platform.rs, window.rs, display.rs, text_system.rs, dispatcher.rs, atlas.rs)
-- `crates/web_inspector/` — Inspector CLI tool
-- `crates/web_inspector/src/main.rs` — Inspector entry point
-- `crates/gpui-web/` — WASM entry point crate
-- `crates/gpui-web/src/lib.rs` — wasm-bindgen entry, WebSocket client, proto dispatch
-
-### Modified files
-- `crates/gpui/Cargo.toml` — Add `web` feature, gate OS deps
-- `crates/gpui/src/platform.rs` — Add `mod web` behind `cfg(target_arch = "wasm32")`
-- `crates/gpui/src/gpui.rs` — Gate platform-specific re-exports
-- `crates/remote_server/Cargo.toml` — Add `web-server` feature
-- `crates/remote_server/src/server.rs` — Add WebSocket accept loop
-- `Cargo.toml` (workspace) — Add new crates to workspace members
-
-### Unchanged
-- All existing proto definitions (reused as-is)
-- `HeadlessProject` (receives the same `AnyProtoClient`, doesn't know about transport)
-- All existing platform backends (mac, linux, windows)
-- All existing tests
+1. **DisplayTree compiles**: `cargo check -p gpui --no-default-features --features headless-web` and `--target wasm32-unknown-unknown --features "web,headless-web"` both succeed
+2. **Capture produces valid tree**: A test creates a GPUI window with known elements, renders, and verifies the DisplayTree matches expected structure
+3. **Delta encoding works**: Two trees are diffed, patches applied, and result matches the target tree
+4. **Browser renders file tree**: Connect browser to zed-web server, see the file tree rendered with correct layout and styling
+5. **Interactions work**: Click a file in the browser → server receives action → buffer opens → DisplayTree updates with editor content
+6. **Zero impact when off**: Default `cargo build` produces identical binary. No performance regression in benchmarks.
+7. **120fps on server**: DisplayTree capture adds <1ms to the render thread per frame
