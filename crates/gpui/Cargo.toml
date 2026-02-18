@@ -28,7 +28,7 @@ test-support = [
 ]
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
-headless-web = []
+headless-web = ["postcard"]
 runtime_shaders = []
 wayland = [
     "bitflags",
@@ -112,6 +112,7 @@ lyon = "1.0"
 pin-project = "1.1.10"
 circular-buffer.workspace = true
 spin = "0.10.0"
+postcard = { version = "1", features = ["alloc"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde", "js"] }

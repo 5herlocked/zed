@@ -1060,3 +1060,76 @@ pub struct DisplayModifiers {
     /// Meta/Super/Windows key.
     pub meta: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Wire protocol
+// ---------------------------------------------------------------------------
+
+/// A wire-format frame sent between the server and browser over WebSocket.
+///
+/// Server-to-browser frames carry tree snapshots, deltas, and metadata.
+/// Browser-to-server frames carry user interactions (actions).
+///
+/// Binary serialization is handled by the transport layer (postcard or bincode)
+/// -- this enum is the logical framing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WireFrame {
+    /// Full display tree snapshot. Sent on first connection and when the
+    /// delta base is unavailable (e.g. after reconnect).
+    Snapshot(DisplayTree),
+
+    /// Incremental update relative to a previously-sent frame.
+    Delta(DisplayTreeDelta),
+
+    /// User interaction forwarded from the browser.
+    Action(DisplayAction),
+
+    /// Server acknowledgement of a received action, with the frame ID of
+    /// the next snapshot/delta that reflects the action's effect.
+    ActionAck {
+        /// Echoed from the action.
+        node_id: DisplayNodeId,
+        /// The frame that will contain the result.
+        result_frame_id: u64,
+    },
+
+    /// Browser requests a full snapshot (sent after reconnect or desync).
+    RequestSnapshot,
+
+    /// Server-to-browser: viewport size negotiation.
+    SetViewport {
+        /// Requested viewport width.
+        width: f32,
+        /// Requested viewport height.
+        height: f32,
+        /// Display scale factor.
+        scale_factor: f32,
+    },
+
+    /// Browser-to-server: viewport size report (after resize).
+    ViewportChanged {
+        /// New viewport width.
+        width: f32,
+        /// New viewport height.
+        height: f32,
+        /// Display scale factor.
+        scale_factor: f32,
+    },
+
+    /// Heartbeat ping (either direction). The receiver should reply with Pong.
+    Ping(u64),
+    /// Heartbeat pong.
+    Pong(u64),
+}
+
+impl WireFrame {
+    /// Serialize to a compact binary representation using postcard.
+    pub fn serialize(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_allocvec(self)
+    }
+
+    /// Deserialize from a binary representation.
+    pub fn deserialize(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        postcard::from_bytes(bytes)
+    }
+}
