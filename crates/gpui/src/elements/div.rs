@@ -1824,7 +1824,40 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
+
+                            #[cfg(feature = "headless-web")]
+                            {
+                                use crate::display_tree::{DisplayStyle, InteractionFlags};
+                                if let Some(builder) = window.display_tree_builder.as_mut() {
+                                    let display_style = DisplayStyle::from_gpui_style(&style);
+                                    let flags = InteractionFlags::from_interactivity(self);
+                                    let element_id_str =
+                                        global_id.map(|id| id.to_string());
+                                    let scroll_pt =
+                                        self.scroll_offset.as_ref().map(|rc| *rc.borrow());
+                                    let group_name =
+                                        self.group.as_ref().map(|s| s.to_string());
+                                    builder.push_container(
+                                        element_id_str,
+                                        display_style,
+                                        flags,
+                                        scroll_pt,
+                                        group_name,
+                                    );
+                                    builder.set_current_bounds(bounds);
+                                    builder.set_current_content_size(content_size);
+                                }
+                            }
+
                             let result = f(&style, scroll_offset, hitbox, window, cx);
+
+                            #[cfg(feature = "headless-web")]
+                            {
+                                if let Some(builder) = window.display_tree_builder.as_mut() {
+                                    builder.pop_node();
+                                }
+                            }
+
                             (result, element_state)
                         },
                     )

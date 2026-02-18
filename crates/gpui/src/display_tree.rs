@@ -70,6 +70,51 @@ impl InteractionFlags {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    /// Extract interaction flags from an Interactivity struct's listener fields.
+    pub fn from_interactivity(interactivity: &crate::Interactivity) -> Self {
+        let mut flags = Self::NONE;
+
+        if !interactivity.click_listeners.is_empty()
+            || !interactivity.aux_click_listeners.is_empty()
+        {
+            flags = flags.union(Self::CLICKABLE);
+        }
+        if interactivity.hover_listener.is_some() || interactivity.hover_style.is_some() {
+            flags = flags.union(Self::HOVERABLE);
+        }
+        if interactivity.scroll_offset.is_some() {
+            flags = flags.union(Self::SCROLLABLE);
+        }
+        if interactivity.focusable || interactivity.tracked_focus_handle.is_some() {
+            flags = flags.union(Self::FOCUSABLE);
+        }
+        if !interactivity.key_down_listeners.is_empty()
+            || !interactivity.key_up_listeners.is_empty()
+        {
+            flags = flags.union(Self::KEY_INPUT);
+        }
+        if !interactivity.mouse_down_listeners.is_empty() {
+            flags = flags.union(Self::MOUSE_DOWN);
+        }
+        if !interactivity.mouse_up_listeners.is_empty() {
+            flags = flags.union(Self::MOUSE_UP);
+        }
+        if !interactivity.mouse_move_listeners.is_empty() {
+            flags = flags.union(Self::MOUSE_MOVE);
+        }
+        if interactivity.drag_listener.is_some() {
+            flags = flags.union(Self::DRAGGABLE);
+        }
+        if !interactivity.drop_listeners.is_empty() {
+            flags = flags.union(Self::DROPPABLE);
+        }
+        if !interactivity.action_listeners.is_empty() {
+            flags = flags.union(Self::HAS_ACTIONS);
+        }
+
+        flags
+    }
 }
 
 /// A single node in the display tree, representing one GPUI element.
