@@ -35,6 +35,7 @@ impl Default for StreamingConfig {
 pub(crate) struct StreamingPlatformState {
     active_window: Option<AnyWindowHandle>,
     frame_tx: smol::channel::Sender<DisplayTree>,
+    resize_rx: smol::channel::Receiver<(f32, f32, f32)>,
     config: StreamingConfig,
     windows: Vec<StreamingWindow>,
 }
@@ -52,6 +53,7 @@ impl StreamingPlatform {
     pub(crate) fn new(
         config: StreamingConfig,
         frame_tx: smol::channel::Sender<DisplayTree>,
+        resize_rx: smol::channel::Receiver<(f32, f32, f32)>,
     ) -> Rc<Self> {
         #[cfg(target_os = "macos")]
         let dispatcher: Arc<dyn crate::PlatformDispatcher> =
@@ -74,6 +76,7 @@ impl StreamingPlatform {
             state: Mutex::new(StreamingPlatformState {
                 active_window: None,
                 frame_tx,
+                resize_rx,
                 config,
                 windows: Vec::new(),
             }),
@@ -113,6 +116,12 @@ impl Platform for StreamingPlatform {
             extern "C" fn frame_timer_cb(_timer: CFRunLoopTimerRef, info: *mut c_void) {
                 let state = unsafe { &*(info as *const Mutex<StreamingPlatformState>) };
                 let windows: Vec<StreamingWindow> = state.lock().windows.clone();
+                let resize_rx = state.lock().resize_rx.clone();
+                while let Ok((w, h, _s)) = resize_rx.try_recv() {
+                    for window in &windows {
+                        window.simulate_resize(w, h);
+                    }
+                }
                 for window in &windows {
                     window.request_frame();
                 }

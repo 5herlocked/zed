@@ -3,6 +3,8 @@ use crate::{
     TextAlign, UnderlineStyle, Window, WrapBoundary, WrappedLineLayout, black, fill, point, px,
     size,
 };
+#[cfg(feature = "headless-web")]
+use crate::display_tree::{DisplayColor, DisplayTextRun};
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -69,6 +71,22 @@ impl ShapedLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = window.display_tree_builder.as_mut() {
+                let bounds = Bounds::new(origin, size(self.layout.width, line_height));
+                let runs = self.decoration_runs.iter().map(|r| DisplayTextRun {
+                    len: r.len as usize,
+                    color: Some(DisplayColor::from_hsla(r.color)),
+                    font_weight: None,
+                    italic: false,
+                    underline: r.underline.is_some(),
+                    strikethrough: r.strikethrough.is_some(),
+                    background: r.background_color.map(DisplayColor::from_hsla),
+                }).collect();
+                builder.push_shaped_text(self.text.to_string(), bounds, runs);
+            }
+        }
         paint_line(
             origin,
             &self.layout,
@@ -143,6 +161,23 @@ impl WrappedLine {
             None => self.layout.wrap_width,
         };
 
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = window.display_tree_builder.as_mut() {
+                let height = line_height * (self.layout.wrap_boundaries.len() as f32 + 1.);
+                let bounds = Bounds::new(origin, size(self.layout.unwrapped_layout.width, height));
+                let runs = self.decoration_runs.iter().map(|r| DisplayTextRun {
+                    len: r.len as usize,
+                    color: Some(DisplayColor::from_hsla(r.color)),
+                    font_weight: None,
+                    italic: false,
+                    underline: r.underline.is_some(),
+                    strikethrough: r.strikethrough.is_some(),
+                    background: r.background_color.map(DisplayColor::from_hsla),
+                }).collect();
+                builder.push_shaped_text(self.text.to_string(), bounds, runs);
+            }
+        }
         paint_line(
             origin,
             &self.layout.unwrapped_layout,

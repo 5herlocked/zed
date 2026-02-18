@@ -182,15 +182,20 @@ impl Application {
     #[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]
     pub fn streaming(
         config: crate::StreamingConfig,
-    ) -> (Self, smol::channel::Receiver<crate::display_tree::DisplayTree>) {
+    ) -> (
+        Self,
+        smol::channel::Receiver<crate::display_tree::DisplayTree>,
+        smol::channel::Sender<(f32, f32, f32)>,
+    ) {
         use crate::StreamingPlatform;
 
         let (frame_tx, frame_rx) = smol::channel::bounded(2);
+        let (resize_tx, resize_rx) = smol::channel::bounded(4);
 
-        let platform = StreamingPlatform::new(config, frame_tx);
+        let platform = StreamingPlatform::new(config, frame_tx, resize_rx);
 
         let app = Self(App::new_app(platform, Arc::new(()), Arc::new(NullHttpClient)));
-        (app, frame_rx)
+        (app, frame_rx, resize_tx)
     }
 
     /// Assigns the source of assets for the application.

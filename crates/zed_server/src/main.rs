@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         scale_factor: args.scale,
     };
 
-    let (app, frame_rx) = Application::streaming(config);
+    let (app, frame_rx, resize_tx) = Application::streaming(config);
 
     let bind_addr = args.bind;
     // Watch channel holds the latest frame -- new clients get it immediately.
@@ -133,9 +133,10 @@ fn main() -> Result<()> {
         let tokio = gpui_tokio::Tokio::handle(cx).clone();
         tokio.spawn(frame_bridge(frame_rx, frame_watch_tx));
 
+        let resize_tx_clone = resize_tx.clone();
         let watch_rx = frame_watch_rx;
         tokio.spawn(async move {
-            if let Err(e) = run_websocket_server(bind_addr, watch_rx).await {
+            if let Err(e) = run_websocket_server(bind_addr, watch_rx, resize_tx_clone).await {
                 error!("WebSocket server error: {e:#}");
             }
         });
@@ -174,6 +175,7 @@ async fn frame_bridge(
 async fn run_websocket_server(
     addr: SocketAddr,
     watch_rx: tokio_watch::Receiver<Bytes>,
+    resize_tx: smol::channel::Sender<(f32, f32, f32)>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!("WebSocket server bound to {addr}");
@@ -182,7 +184,8 @@ async fn run_websocket_server(
         let (stream, peer) = listener.accept().await?;
         info!("new connection from {peer}");
         let rx = watch_rx.clone();
-        tokio::spawn(handle_client(stream, peer, rx));
+        let rtx = resize_tx.clone();
+        tokio::spawn(handle_client(stream, peer, rx, rtx));
     }
 }
 
@@ -191,6 +194,7 @@ async fn handle_client(
     stream: TcpStream,
     peer: SocketAddr,
     mut watch_rx: tokio_watch::Receiver<Bytes>,
+    resize_tx: smol::channel::Sender<(f32, f32, f32)>,
 ) {
     let ws = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
@@ -235,11 +239,31 @@ async fn handle_client(
     let recv_task = tokio::spawn(async move {
         while let Ok(Some(msg)) = ws_rx.try_next().await {
             match msg {
+                Message::Text(text) => {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(vc) = val.get("ViewportChanged") {
+                            let w = vc.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            let h = vc.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            let s = vc.get("scale_factor").and_then(|v| v.as_f64()).unwrap_or(2.0) as f32;
+                            if w > 0.0 && h > 0.0 {
+                                info!("{peer_recv} viewport: {w}x{h} @{s}x");
+                                let _ = resize_tx.try_send((w, h, s));
+                            }
+                        }
+                    }
+                }
                 Message::Binary(data) => {
-                    info!(
-                        "{peer_recv} received {} bytes (action handling not yet implemented)",
-                        data.len()
-                    );
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
+                        if let Some(vc) = val.get("ViewportChanged") {
+                            let w = vc.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            let h = vc.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            let s = vc.get("scale_factor").and_then(|v| v.as_f64()).unwrap_or(2.0) as f32;
+                            if w > 0.0 && h > 0.0 {
+                                info!("{peer_recv} viewport: {w}x{h} @{s}x");
+                                let _ = resize_tx.try_send((w, h, s));
+                            }
+                        }
+                    }
                 }
                 Message::Close(_) => break,
                 _ => {}

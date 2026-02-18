@@ -89,7 +89,7 @@ impl Element for Svg {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Hitbox> {
-        self.interactivity.prepaint(
+        let hitbox = self.interactivity.prepaint(
             global_id,
             inspector_id,
             bounds,
@@ -97,7 +97,22 @@ impl Element for Svg {
             window,
             cx,
             |_, _, hitbox, _, _| hitbox,
-        )
+        );
+
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = window.display_tree_builder.as_mut() {
+                let path = self.path.as_ref().or(self.external_path.as_ref());
+                if let Some(path) = path {
+                    builder.set_current_kind(crate::display_tree::DisplayNodeKind::Svg {
+                        path: path.to_string(),
+                        color: None,
+                    });
+                }
+            }
+        }
+
+        hitbox
     }
 
     fn paint(

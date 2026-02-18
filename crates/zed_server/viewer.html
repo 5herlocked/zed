@@ -29,7 +29,6 @@
       ctx.scale(dpr, dpr);
     }
     resize();
-    window.addEventListener('resize', resize);
 
     function colorToCSS(c) {
       if (!c) return null;
@@ -72,6 +71,17 @@
       }
     }
 
+    // Extract the variant name and payload from a serde-serialized Rust enum.
+    // Serde externally-tagged: {"Text": {"content": "...", "runs": [...]}}
+    // Unit variants may serialize as just the string "Container" (rare).
+    function parseKind(kind) {
+      if (!kind) return { variant: null, data: null };
+      if (typeof kind === 'string') return { variant: kind, data: {} };
+      const keys = Object.keys(kind);
+      if (keys.length === 1) return { variant: keys[0], data: kind[keys[0]] };
+      return { variant: null, data: kind };
+    }
+
     function resolveTextStyle(node, inherited) {
       const t = node.style?.text;
       return {
@@ -84,6 +94,78 @@
       };
     }
 
+    function drawTextContent(content, runs, x, y, ts) {
+      if (!content) return;
+
+      ctx.textBaseline = 'top';
+
+      if (!runs || runs.length === 0) {
+        ctx.font = `${ts.fontStyle !== 'normal' ? ts.fontStyle + ' ' : ''}${ts.fontWeight} ${ts.fontSize}px ${ts.fontFamily}`;
+        ctx.fillStyle = ts.color;
+        ctx.fillText(content, x, y + 2);
+        return;
+      }
+
+      // Runs use `len` (byte count per run), not start/end indices.
+      // Walk through the content slicing by cumulative offset.
+      let cursorX = x;
+      let offset = 0;
+      for (const run of runs) {
+        const end = offset + (run.len || 0);
+        const slice = content.substring(offset, end);
+        offset = end;
+
+        const rColor = run.color ? colorToCSS(run.color) : ts.color;
+        const rSize = run.font_size || ts.fontSize;
+        const rWeight = run.font_weight || ts.fontWeight;
+        const rFamily = run.font_family || ts.fontFamily;
+        const rItalic = run.italic ? 'italic ' : '';
+        ctx.font = `${rItalic}${rWeight} ${rSize}px ${rFamily}`;
+        ctx.fillStyle = rColor;
+
+        // Run background highlight
+        if (run.background) {
+          const bg = colorToCSS(run.background);
+          if (bg) {
+            const metrics = ctx.measureText(slice);
+            ctx.save();
+            ctx.fillStyle = bg;
+            ctx.fillRect(cursorX, y, metrics.width, rSize + 4);
+            ctx.restore();
+            ctx.fillStyle = rColor;
+          }
+        }
+
+        ctx.fillText(slice, cursorX, y + 2);
+
+        // Underline / strikethrough
+        if (run.underline) {
+          const metrics = ctx.measureText(slice);
+          ctx.save();
+          ctx.strokeStyle = rColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cursorX, y + rSize + 2);
+          ctx.lineTo(cursorX + metrics.width, y + rSize + 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (run.strikethrough) {
+          const metrics = ctx.measureText(slice);
+          ctx.save();
+          ctx.strokeStyle = rColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cursorX, y + rSize * 0.5);
+          ctx.lineTo(cursorX + metrics.width, y + rSize * 0.5);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        cursorX += ctx.measureText(slice).width;
+      }
+    }
+
     function drawNode(node, inherited) {
       if (!node) return;
       const vis = node.style?.visual;
@@ -91,7 +173,6 @@
 
       const b = node.bounds;
       if (!b) {
-        // No bounds -- just recurse children with inherited text style
         const ts = resolveTextStyle(node, inherited);
         for (const child of (node.children || [])) drawNode(child, ts);
         return;
@@ -142,48 +223,11 @@
 
       const ts = resolveTextStyle(node, inherited);
 
-      // Text content
-      const kind = node.kind;
-      if (kind === 'Text' || (kind && typeof kind === 'object' && kind.Text)) {
-        const text = kind.Text || kind;
-        const content = text.content;
-        const runs = text.runs || [];
+      // Check element kind (serde externally-tagged enum)
+      const { variant, data } = parseKind(node.kind);
 
-        if (content) {
-          let cursorX = x;
-          const baseline = y + (ts.fontSize * 0.8);
-
-          if (runs.length === 0) {
-            ctx.font = `${ts.fontStyle} ${ts.fontWeight} ${ts.fontSize}px ${ts.fontFamily}`;
-            ctx.fillStyle = ts.color;
-            ctx.textBaseline = 'top';
-            ctx.fillText(content, x, y + 2);
-          } else {
-            ctx.textBaseline = 'top';
-            for (const run of runs) {
-              const rColor = run.color ? colorToCSS(run.color) : ts.color;
-              const rSize = run.font_size || ts.fontSize;
-              const rWeight = run.font_weight || ts.fontWeight;
-              const rFamily = run.font_family || ts.fontFamily;
-              ctx.font = `${rWeight} ${rSize}px ${rFamily}`;
-              ctx.fillStyle = rColor;
-              const slice = content.substring(run.start, run.end);
-              ctx.fillText(slice, cursorX, y + 2);
-              cursorX += ctx.measureText(slice).width;
-            }
-          }
-        }
-      }
-
-      // InteractiveText
-      if (kind && typeof kind === 'object' && kind.InteractiveText) {
-        const text = kind.InteractiveText;
-        if (text.content) {
-          ctx.font = `${ts.fontWeight} ${ts.fontSize}px ${ts.fontFamily}`;
-          ctx.fillStyle = ts.color;
-          ctx.textBaseline = 'top';
-          ctx.fillText(text.content, x, y + 2);
-        }
+      if (variant === 'Text' || variant === 'InteractiveText') {
+        drawTextContent(data.content, data.runs, x, y, ts);
       }
 
       // Recurse children
@@ -215,7 +259,18 @@
     const ws = new WebSocket('ws://127.0.0.1:8080');
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = () => { status.textContent = 'connected'; };
+    ws.onopen = () => {
+      status.textContent = 'connected';
+      status.style.color = '#9ece6a';
+      sendViewport();
+    };
+
+    function sendViewport() {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ ViewportChanged: {
+        width: window.innerWidth, height: window.innerHeight, scale_factor: dpr
+      }}));
+    };
 
     ws.onmessage = (event) => {
       frameCount++;
@@ -228,17 +283,43 @@
         const tree = JSON.parse(text);
         paintFrame(tree);
 
-        if (frameCount % 30 === 0) {
-          const bytes = event.data.byteLength;
-          status.textContent = `frame #${frameCount} | ${bytes}B | ${delta.toFixed(0)}ms`;
-        }
+        const bytes = event.data.byteLength;
+        const nodes = countNodes(tree.root);
+        status.textContent = `frame #${frameCount} | ${nodes} nodes | ${(bytes/1024).toFixed(0)}KB | ${delta.toFixed(0)}ms`;
+        status.style.color = '#565f89';
       } catch (e) {
         status.textContent = `parse error: ${e.message}`;
+        status.style.color = '#f7768e';
       }
     };
 
-    ws.onerror = () => { status.textContent = 'error'; };
-    ws.onclose = (e) => { status.textContent = `closed (${e.code})`; };
+    ws.onerror = () => {
+      status.textContent = 'error';
+      status.style.color = '#f7768e';
+    };
+    ws.onclose = (e) => {
+      status.textContent = `closed (${e.code})`;
+      status.style.color = '#f7768e';
+    };
+
+    function countNodes(node) {
+      if (!node) return 0;
+      let count = 1;
+      for (const child of (node.children || [])) count += countNodes(child);
+      return count;
+    }
+
+    // Debounced resize: send new viewport when browser window changes.
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      // Re-scale the canvas for the new size.
+      resize();
+      // Debounce viewport messages to avoid flooding during drag-resize.
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        sendViewport();
+      }, 150);
+    });
   </script>
 </body>
 </html>

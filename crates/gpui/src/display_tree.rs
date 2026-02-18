@@ -220,7 +220,7 @@ pub enum DisplayLength {
 }
 
 /// Visual style properties.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayVisualStyle {
     /// Background color as RGBA.
     pub background: Option<DisplayColor>,
@@ -238,6 +238,21 @@ pub struct DisplayVisualStyle {
     pub cursor: Option<String>,
     /// Visibility.
     pub visible: bool,
+}
+
+impl Default for DisplayVisualStyle {
+    fn default() -> Self {
+        Self {
+            background: None,
+            border_color: None,
+            border_widths: None,
+            corner_radii: None,
+            box_shadows: Vec::new(),
+            opacity: None,
+            cursor: None,
+            visible: true,
+        }
+    }
 }
 
 /// RGBA color for wire transport.
@@ -710,15 +725,18 @@ impl DisplayTreeBuilder {
     }
 
     /// Push a text leaf node as a child of the current container.
-    /// Convenience wrapper used by StyledText's capture hook.
-    pub fn push_text_leaf(
+    /// Used by ShapedLine/WrappedLine capture hooks during paint to record
+    /// all painted text (editor buffer, terminal, labels, etc.) with styled runs.
+    pub fn push_shaped_text(
         &mut self,
         content: String,
-        bounds: Bounds<Pixels>) {
+        bounds: Bounds<Pixels>,
+        runs: Vec<DisplayTextRun>,
+    ) {
         let node = DisplayNode {
             id: self.next_node_id(),
             element_id: None,
-            kind: DisplayNodeKind::Text { content, runs: Vec::new() },
+            kind: DisplayNodeKind::Text { content, runs },
             style: DisplayStyle::default(),
             bounds: Some(bounds),
             content_size: None,

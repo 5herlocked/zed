@@ -432,7 +432,7 @@ impl Element for Img {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.interactivity.prepaint(
+        let hitbox = self.interactivity.prepaint(
             global_id,
             inspector_id,
             bounds,
@@ -446,7 +446,40 @@ impl Element for Img {
 
                 hitbox
             },
-        )
+        );
+
+        #[cfg(feature = "headless-web")]
+        {
+            if let Some(builder) = window.display_tree_builder.as_mut() {
+                let source = match &self.source {
+                    ImageSource::Resource(resource) => {
+                        let uri_str = match resource {
+                            crate::Resource::Uri(uri) => Some(uri.to_string()),
+                            crate::Resource::Path(p) => Some(format!("{}", p.display())),
+                            crate::Resource::Embedded(name) => Some(name.to_string()),
+                        };
+                        uri_str.map(crate::display_tree::DisplayImageSource::Uri)
+                    }
+                    _ => None,
+                };
+                if let Some(source) = source {
+                    let object_fit = Some(match self.style.object_fit {
+                        crate::ObjectFit::Contain => "Contain",
+                        crate::ObjectFit::Cover => "Cover",
+                        crate::ObjectFit::Fill => "Fill",
+                        crate::ObjectFit::ScaleDown => "ScaleDown",
+                        crate::ObjectFit::None => "None",
+                    }.to_string());
+                    builder.set_current_kind(crate::display_tree::DisplayNodeKind::Image {
+                        source,
+                        object_fit,
+                        grayscale: self.style.grayscale,
+                    });
+                }
+            }
+        }
+
+        hitbox
     }
 
     fn paint(
