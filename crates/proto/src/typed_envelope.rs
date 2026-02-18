@@ -5,8 +5,13 @@ use std::{
     any::{Any, TypeId},
     cmp,
     fmt::{self, Debug},
+    marker::PhantomData,
 };
-use std::{marker::PhantomData, time::Instant};
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+pub use web_time::Instant;
 
 pub trait EnvelopedMessage: Clone + Debug + Serialize + Sized + Send + Sync + 'static {
     const NAME: &'static str;

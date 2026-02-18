@@ -141,7 +141,11 @@ pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
-    unimplemented!("WebPlatform requires explicit initialization with executors")
+    let dispatcher = Arc::new(web::WebDispatcher);
+    web::WebPlatform::new(
+        BackgroundExecutor::new(dispatcher.clone()),
+        ForegroundExecutor::new(dispatcher),
+    )
 }
 
 /// Return which compositor we're guessing we'll use.

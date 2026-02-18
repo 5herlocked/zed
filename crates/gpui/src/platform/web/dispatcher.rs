@@ -1,5 +1,5 @@
 use crate::{PlatformDispatcher, Priority, RunnableVariant, TaskTiming, ThreadTaskTimings};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub(crate) struct WebDispatcher;
 

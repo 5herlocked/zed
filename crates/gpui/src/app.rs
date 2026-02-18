@@ -152,6 +152,16 @@ impl Application {
         ))
     }
 
+    /// Builds an app for the WASM/web platform.
+    #[allow(clippy::new_without_default)]
+    #[cfg(target_arch = "wasm32")]
+    pub fn new() -> Self {
+        Self(App::new_app(
+            current_platform(false),
+            Arc::new(()),
+        ))
+    }
+
     /// Build an app in headless mode. This prevents opening windows,
     /// but makes it possible to run an application in an context like
     /// SSH, where GUI applications are not allowed.

@@ -7688,14 +7688,20 @@ name = "gpui-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "collections",
  "console_error_panic_hook",
+ "futures 0.3.32",
+ "gpui",
  "js-sys",
  "log",
+ "parking_lot",
  "prost 0.9.0",
  "proto",
+ "rpc",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
@@ -13249,6 +13255,7 @@ dependencies = [
  "prost-build 0.9.0",
  "serde",
  "typed-path",
+ "web-time",
 ]
 
 [[package]]

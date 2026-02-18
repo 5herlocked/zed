@@ -1,3 +1,8 @@
+mod file_tree_view;
+mod web_buffer_store;
+mod web_client;
+mod web_worktree_store;
+
 use prost::Message as ProstMessage;
 use proto::{Envelope, envelope::Payload};
 use wasm_bindgen::prelude::*;
@@ -158,6 +163,59 @@ pub fn connect_with_callback(url: &str, on_message: &JsValue) -> Result<(), JsVa
     });
     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
     onclose.forget();
+
+    Ok(())
+}
+
+/// Launch the GPUI-based file tree view connected to a Zed remote server.
+///
+/// This creates a GPUI application, connects to the server via WebSocket,
+/// registers proto message handlers, and renders a file tree from the
+/// server's worktree state.
+#[wasm_bindgen]
+pub fn launch_file_tree(url: &str) -> Result<(), JsValue> {
+    use crate::file_tree_view::FileTreeView;
+    use crate::web_buffer_store::WebBufferStore;
+    use crate::web_client::WebProtoClient;
+    use crate::web_worktree_store::WebWorktreeStore;
+    use gpui::AppContext as _;
+    use rpc::AnyProtoClient;
+
+    let url = url.to_string();
+
+    let app = gpui::Application::new();
+    app.run(move |cx| {
+        let async_cx = cx.to_async();
+
+        let client = match WebProtoClient::new(&url, &async_cx) {
+            Ok(client) => client,
+            Err(error) => {
+                web_sys::console::error_1(
+                    &format!("Failed to create WebProtoClient: {error:#}").into(),
+                );
+                return;
+            }
+        };
+
+        let proto_client: AnyProtoClient = client.clone().into();
+
+        let worktree_store = cx.new(|_cx| WebWorktreeStore::new(0));
+        let buffer_store = cx.new(|_cx| WebBufferStore::new(0));
+
+        WebWorktreeStore::register_message_handlers(&proto_client, &worktree_store);
+        WebBufferStore::register_message_handlers(&proto_client, &buffer_store);
+
+        proto_client.subscribe_to_entity::<WebWorktreeStore>(0, &worktree_store);
+        proto_client.subscribe_to_entity::<WebBufferStore>(0, &buffer_store);
+
+        if let Err(error) = client.send_remote_started() {
+            web_sys::console::error_1(
+                &format!("Failed to send RemoteStarted: {error:#}").into(),
+            );
+        }
+
+        web_sys::console::log_1(&"gpui-web: File tree view launched".into());
+    });
 
     Ok(())
 }

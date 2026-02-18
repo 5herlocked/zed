@@ -15,11 +15,17 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow.workspace = true
+collections.workspace = true
 console_error_panic_hook.workspace = true
+futures.workspace = true
+gpui = { workspace = true, features = ["web"], default-features = false }
 js-sys.workspace = true
 log.workspace = true
+parking_lot.workspace = true
 prost.workspace = true
 proto.workspace = true
+rpc = { workspace = true, features = ["gpui"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys.workspace = true
+web-time = "1"
