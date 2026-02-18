@@ -29,6 +29,8 @@ pub struct StreamingWindowState {
 }
 
 #[derive(Clone)]
+/// A virtual window for headless-web streaming mode.
+/// Captures DisplayTree frames and ships them through a smol channel.
 pub struct StreamingWindow(pub(crate) Arc<Mutex<StreamingWindowState>>);
 
 impl HasWindowHandle for StreamingWindow {
@@ -48,6 +50,7 @@ impl HasDisplayHandle for StreamingWindow {
 }
 
 impl StreamingWindow {
+    /// Create a new streaming window with the given viewport dimensions.
     pub fn new(
         width: f32,
         height: f32,
@@ -125,6 +128,7 @@ impl StreamingWindow {
         if let Some(mut cb) = callback {
             cb(RequestFrameOptions {
                 require_presentation: true,
+                force_render: false,
             });
             self.0.lock().request_frame_callback = Some(cb);
         }

@@ -174,6 +174,25 @@ impl Application {
         ))
     }
 
+    /// Build an app in streaming mode for web transport.
+    ///
+    /// Returns (AppContext, frame_rx) where frame_rx receives a `DisplayTree`
+    /// after every render frame. The caller (zed_web server) reads from
+    /// frame_rx, serializes, and ships over WebSocket.
+    #[cfg(feature = "headless-web")]
+    pub fn streaming(
+        config: crate::StreamingConfig,
+    ) -> (Self, smol::channel::Receiver<crate::display_tree::DisplayTree>) {
+        use crate::StreamingPlatform;
+
+        let (frame_tx, frame_rx) = smol::channel::bounded(2);
+
+        let platform = StreamingPlatform::new(config, frame_tx);
+
+        let app = Self(App::new_app(platform, Arc::new(()), Arc::new(NullHttpClient)));
+        (app, frame_rx)
+    }
+
     /// Assigns the source of assets for the application.
     pub fn with_assets(self, asset_source: impl AssetSource) -> Self {
         let mut context_lock = self.0.borrow_mut();

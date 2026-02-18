@@ -40,11 +40,12 @@ Server (native)                          Browser (WASM + GPUI)
 | `91a6d21283` | Text (StyledText) + UniformList capture hooks |
 | `768c435d19` | Wire protocol (WireFrame enum) + postcard serialization |
 | `a9d6104699` | StreamingWindow: PlatformWindow impl, frame channel, input injection |
+| `3a93d4f8d7` | Frame pipeline: Window::draw() finalizes DisplayTree and sends through StreamingWindow |
+| `102dd1d9b3` | StreamingPlatform: full Platform impl with MacTextSystem, MacDispatcher, AppContext::streaming() entry point |
 
 ### Remaining
 
-- [ ] **Window::draw() frame send** -- finalize DisplayTree from builder, ship through StreamingWindow's frame channel. Currently builder creates/finishes but doesn't transmit.
-- [ ] **zed_web server binary** -- external crate that boots GPUI with StreamingPlatform, opens full Zed workspace on StreamingWindow, runs WebSocket server consuming the frame channel. Needs a StreamingPlatform (Platform trait impl) in addition to the StreamingWindow we already have.
+- [ ] **zed_web server binary** -- external crate that boots GPUI via `AppContext::streaming()`, opens a Zed workspace, runs WebSocket server consuming frame_rx. The GPUI infra is done; this is the application-level wiring.
 - [ ] **Browser client (WASM + GPUI)** -- receives WireFrames, deserializes DisplayTree, hydrates into real GPUI elements, runs Taffy layout + paint locally. Builds on GPUI's existing `web` platform module (`cfg(target_arch = "wasm32")`). This is the heaviest piece -- needs a hydration layer that converts DisplayNode tree into GPUI element calls.
 - [ ] **Additional capture hooks** -- Image, SVG, Anchored, Canvas, List (variable-height). Current hooks cover Container, Text, UniformList which handles the bulk of the UI.
 - [ ] **Background serialization** -- move postcard serialization off the render thread. Current WireFrame::serialize() is synchronous; needs to happen on background executor to preserve frame budget.
@@ -58,11 +59,13 @@ Server (native)                          Browser (WASM + GPUI)
 | File | Role |
 |------|------|
 | `crates/gpui/src/display_tree.rs` | All types: DisplayNode, DisplayNodeKind, DisplayStyle, WireFrame, builder, diff, actions (~1140 lines) |
+| `crates/gpui/src/platform/streaming/platform.rs` | StreamingPlatform: full Platform impl with MacTextSystem + MacDispatcher + StreamingDisplay |
 | `crates/gpui/src/platform/streaming/window.rs` | StreamingWindow PlatformWindow impl + StreamingAtlas |
 | `crates/gpui/src/platform/streaming/mod.rs` | Module declaration |
 | `crates/gpui/src/platform.rs` | Conditional module inclusion + re-export |
 | `crates/gpui/src/gpui.rs` | `#[cfg(feature = "headless-web")] pub mod display_tree` |
 | `crates/gpui/src/window.rs` | DisplayTreeBuilder field on Window, create/finalize in draw() |
+| `crates/gpui/src/app.rs` | `AppContext::streaming(config)` public constructor returning `(AppContext, Receiver<DisplayTree>)` |
 | `crates/gpui/src/elements/div.rs` | Container capture hooks in Interactivity::prepaint() |
 | `crates/gpui/src/elements/text.rs` | Text leaf capture hook in StyledText::prepaint() |
 | `crates/gpui/src/elements/uniform_list.rs` | UniformList kind override in prepaint closure |
