@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>zed_server frame test</title>
+  <style>
+    body { background: #1a1b26; color: #c0caf5; font-family: monospace; padding: 20px; }
+    #log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+    .info { color: #7aa2f7; }
+    .data { color: #9ece6a; }
+    .error { color: #f7768e; }
+    .warn { color: #e0af68; }
+  </style>
+</head>
+<body>
+  <div id="log"></div>
+  <script>
+    const log = document.getElementById('log');
+    function append(cls, msg) {
+      const line = document.createElement('div');
+      line.className = cls;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      log.appendChild(line);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    const ws = new WebSocket('ws://127.0.0.1:8080');
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => append('info', 'connected to ws://127.0.0.1:8080');
+
+    let frameCount = 0;
+    let lastTime = performance.now();
+    let bytesTotal = 0;
+
+    ws.onmessage = (event) => {
+      frameCount++;
+      const bytes = event.data.byteLength;
+      bytesTotal += bytes;
+      const now = performance.now();
+      const delta = now - lastTime;
+      lastTime = now;
+
+      const view = new Uint8Array(event.data);
+      const hex = Array.from(view.slice(0, 32), b => b.toString(16).padStart(2, '0')).join(' ');
+
+      if (frameCount <= 10 || frameCount % 30 === 0) {
+        append('data', `frame #${frameCount} | ${bytes} bytes | ${delta.toFixed(1)}ms gap | total ${(bytesTotal / 1024).toFixed(1)}KB`);
+        append('data', `  first 32 bytes: ${hex}`);
+      }
+    };
+
+    ws.onerror = (e) => append('error', `websocket error: ${e.type}`);
+    ws.onclose = (e) => append('warn', `connection closed: code=${e.code} reason=${e.reason}`);
+  </script>
+</body>
+</html>

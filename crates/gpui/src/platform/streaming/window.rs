@@ -277,6 +277,18 @@ impl PlatformWindow for StreamingWindow {
         // Window::draw() handles serialization to the transport layer.
     }
 
+    fn drive_frame(&self) {
+        let mut lock = self.0.lock();
+        if let Some(mut callback) = lock.request_frame_callback.take() {
+            drop(lock);
+            callback(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+            self.0.lock().request_frame_callback = Some(callback);
+        }
+    }
+
     #[cfg(feature = "headless-web")]
     fn send_display_tree(&self, tree: crate::display_tree::DisplayTree) {
         let _ = self.0.lock().frame_tx.try_send(tree);

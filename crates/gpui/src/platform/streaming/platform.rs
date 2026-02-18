@@ -1,10 +1,10 @@
-use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
-    Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay, PlatformWindow,
-    PlatformTextSystem, Task, ThermalState, WindowAppearance, WindowParams,
-};
 use crate::display_tree::DisplayTree;
 use crate::platform::streaming::StreamingWindow;
+use crate::{
+    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
+    Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay, PlatformTextSystem,
+    PlatformWindow, Task, ThermalState, WindowAppearance, WindowParams,
+};
 use anyhow::Result;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
@@ -36,6 +36,7 @@ pub(crate) struct StreamingPlatformState {
     active_window: Option<AnyWindowHandle>,
     frame_tx: smol::channel::Sender<DisplayTree>,
     config: StreamingConfig,
+    windows: Vec<StreamingWindow>,
 }
 
 /// A Platform implementation for headless-web streaming mode.
@@ -53,14 +54,12 @@ impl StreamingPlatform {
         frame_tx: smol::channel::Sender<DisplayTree>,
     ) -> Rc<Self> {
         #[cfg(target_os = "macos")]
-        let dispatcher: Arc<dyn crate::PlatformDispatcher> = Arc::new(
-            crate::platform::MacDispatcher::new()
-        );
+        let dispatcher: Arc<dyn crate::PlatformDispatcher> =
+            Arc::new(crate::platform::MacDispatcher::new());
 
         #[cfg(target_os = "macos")]
-        let text_system: Arc<dyn PlatformTextSystem> = Arc::new(
-            crate::platform::MacTextSystem::new()
-        );
+        let text_system: Arc<dyn PlatformTextSystem> =
+            Arc::new(crate::platform::MacTextSystem::new());
 
         #[cfg(not(target_os = "macos"))]
         let text_system: Arc<dyn PlatformTextSystem> = Arc::new(crate::NoopTextSystem);
@@ -76,6 +75,7 @@ impl StreamingPlatform {
                 active_window: None,
                 frame_tx,
                 config,
+                windows: Vec::new(),
             }),
         })
     }
@@ -96,6 +96,45 @@ impl Platform for StreamingPlatform {
 
     fn run(&self, on_finish_launching: Box<dyn FnOnce()>) {
         on_finish_launching();
+
+        // Install a frame-driving timer on the main run loop, analogous to
+        // the CVDisplayLink that drives frames for native Mac windows.
+        // Fires at ~30fps; each tick invokes request_frame() on every
+        // registered StreamingWindow, which triggers GPUI's draw pipeline.
+        #[cfg(target_os = "macos")]
+        {
+            use core_foundation::base::*;
+            use core_foundation::date::*;
+            use core_foundation::runloop::*;
+            use std::ffi::c_void;
+
+            let state_ptr: *const Mutex<StreamingPlatformState> = &self.state;
+
+            extern "C" fn frame_timer_cb(_timer: CFRunLoopTimerRef, info: *mut c_void) {
+                let state = unsafe { &*(info as *const Mutex<StreamingPlatformState>) };
+                let windows: Vec<StreamingWindow> = state.lock().windows.clone();
+                for window in &windows {
+                    window.request_frame();
+                }
+            }
+
+            unsafe {
+                let interval = 1.0 / 120.0;
+                let mut ctx: CFRunLoopTimerContext = std::mem::zeroed();
+                ctx.info = state_ptr as *mut c_void;
+                let timer = CFRunLoopTimerCreate(
+                    kCFAllocatorDefault,
+                    CFAbsoluteTimeGetCurrent() + interval,
+                    interval,
+                    0,
+                    0,
+                    frame_timer_cb,
+                    &mut ctx,
+                );
+                CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopCommonModes);
+            }
+        }
+
         // Block the main thread and pump the foreground executor, matching
         // MacPlatform's headless behavior.  Without this, MacDispatcher's
         // GCD dispatches never execute and the process exits immediately.
@@ -158,9 +197,12 @@ impl Platform for StreamingPlatform {
             state.config.scale_factor,
             state.frame_tx.clone(),
         );
+        let boxed = Box::new(window.clone());
         drop(state);
-        self.state.lock().active_window = Some(handle);
-        Ok(Box::new(window))
+        let mut state = self.state.lock();
+        state.active_window = Some(handle);
+        state.windows.push(window);
+        Ok(boxed)
     }
 
     fn window_appearance(&self) -> WindowAppearance {
@@ -227,7 +269,9 @@ impl Platform for StreamingPlatform {
     }
 
     fn path_for_auxiliary_executable(&self, _name: &str) -> Result<PathBuf> {
-        Err(anyhow::anyhow!("no auxiliary executables in streaming mode"))
+        Err(anyhow::anyhow!(
+            "no auxiliary executables in streaming mode"
+        ))
     }
 
     fn set_cursor_style(&self, _style: CursorStyle) {}

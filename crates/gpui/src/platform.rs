@@ -556,6 +556,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 
+    /// Drive a single frame request, invoking the registered request_frame
+    /// callback. On native platforms the DisplayLink handles this; on
+    /// StreamingWindow the caller must drive frames explicitly.
+    fn drive_frame(&self) {}
+
+
     /// Ship a captured display tree to the transport layer.
     /// Only StreamingWindow provides a real implementation; all other
     /// platform windows are no-ops.

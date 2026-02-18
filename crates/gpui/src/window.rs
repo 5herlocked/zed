@@ -1554,6 +1554,13 @@ impl Window {
         }
     }
 
+    /// Drive a single frame through the render pipeline. On native platforms
+    /// the DisplayLink handles this automatically; on streaming platforms the
+    /// caller must drive frames explicitly (analogous to a manual vsync).
+    pub fn drive_frame(&self) {
+        self.platform_window.drive_frame();
+    }
+
     /// Close this window.
     pub fn remove_window(&mut self) {
         self.removed = true;
