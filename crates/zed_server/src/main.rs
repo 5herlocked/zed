@@ -4,9 +4,11 @@ use clap::Parser;
 use futures::stream::StreamExt;
 use futures::{SinkExt, TryStreamExt};
 use gpui::display_tree::DisplayTree;
-use gpui::{Application, StreamingConfig};
+use gpui::prelude::*;
+use gpui::{div, px, rgb, Application, Context, Render, StreamingConfig, Window, WindowOptions};
 use log::{error, info};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
@@ -50,6 +52,31 @@ fn main() -> Result<()> {
         settings::init(cx);
         gpui_tokio::init(cx);
 
+        let window = cx
+            .open_window(WindowOptions::default(), |_window, cx| {
+                cx.new(|_cx| ServerView { frame_count: 0 })
+            })
+            .expect("failed to open streaming window");
+
+        // Drive the render loop at ~30fps. Each tick bumps the frame counter,
+        // notifies GPUI the view is dirty, which triggers Window::draw() ->
+        // DisplayTree capture -> frame_tx.
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            loop {
+                executor.timer(Duration::from_millis(33)).await;
+                cx.update(|cx| {
+                    window
+                        .update(cx, |view, _window, cx| {
+                            view.frame_count += 1;
+                            cx.notify();
+                        })
+                        .ok();
+                });
+            }
+        })
+        .detach();
+
         let tokio = gpui_tokio::Tokio::handle(cx).clone();
         let btx = broadcast_tx.clone();
 
@@ -69,6 +96,54 @@ fn main() -> Result<()> {
     });
 
     Ok(())
+}
+
+/// Root view for the streaming server. Renders a minimal UI that proves
+/// the capture pipeline works end-to-end. Will be replaced with a real
+/// Zed workspace once the full init chain is wired up.
+struct ServerView {
+    frame_count: usize,
+}
+
+impl Render for ServerView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .bg(rgb(0x1a1b26))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(16.0))
+            .child(
+                div()
+                    .text_color(rgb(0x7aa2f7))
+                    .text_size(px(32.0))
+                    .child("Zed Web Server"),
+            )
+            .child(
+                div()
+                    .text_color(rgb(0x565f89))
+                    .text_size(px(16.0))
+                    .child(format!("Frame {}", self.frame_count)),
+            )
+            .child(
+                div()
+                    .mt(px(32.0))
+                    .px(px(24.0))
+                    .py(px(12.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x24283b))
+                    .border_1()
+                    .border_color(rgb(0x414868))
+                    .child(
+                        div()
+                            .text_color(rgb(0x9ece6a))
+                            .text_size(px(14.0))
+                            .child("Pipeline: capture -> serialize -> WebSocket -> browser"),
+                    ),
+            )
+    }
 }
 
 /// Reads DisplayTree frames from GPUI's smol channel and broadcasts
@@ -130,7 +205,6 @@ async fn handle_client(
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
-    // Send frames to the browser client.
     let peer_send = peer;
     let send_task = tokio::spawn(async move {
         while let Ok(bytes) = frame_rx.recv().await {
@@ -141,14 +215,15 @@ async fn handle_client(
         info!("{peer_send} send loop ended");
     });
 
-    // Read incoming messages (DisplayActions from browser, future use).
     let peer_recv = peer;
     let recv_task = tokio::spawn(async move {
         while let Ok(Some(msg)) = ws_rx.try_next().await {
             match msg {
                 Message::Binary(data) => {
-                    // TODO: deserialize WireFrame::Action and inject via StreamingWindow
-                    info!("{peer_recv} received {} bytes (action handling not yet implemented)", data.len());
+                    info!(
+                        "{peer_recv} received {} bytes (action handling not yet implemented)",
+                        data.len()
+                    );
                 }
                 Message::Close(_) => break,
                 _ => {}
