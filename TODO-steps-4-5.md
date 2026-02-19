@@ -1,94 +1,166 @@
-# TODO: Zed Web — Element Tree Sync Implementation
+# Zed Web -- Element Tree Sync
 
-## Status
+Branch: `feature/web-view` (19 commits ahead of `personal/feature/web-view`)
 
-Architecture: **Element Tree Sync** (decided after evaluating entity sync, scene streaming, and DOM projection).
-Branch: `feature/web-view`
+## How to Run
 
-## Completed
+```bash
+# Build (once, or after code changes)
+cargo build -p zed_server
 
-- [x] DisplayTree data structure designed and implemented (`crates/gpui/src/display_tree.rs`)
-  - DisplayNode, DisplayNodeKind (Container, Text, Image, Svg, UniformList, List, Anchored, Canvas)
-  - DisplayStyle (layout + visual + text), DisplayColor, DisplayBoxShadow, DisplayLength
-  - InteractionFlags (bitfield: clickable, hoverable, scrollable, focusable, etc.)
-  - DisplayTreeBuilder (stack-based builder for incremental construction during render walks)
-  - DisplayTreeDelta + DisplayTreePatch (diff/patch for delta encoding between frames)
-  - DisplayAction + DisplayActionKind (action forwarding from browser to server)
-  - diff_display_trees() diffing algorithm
-- [x] `headless-web` feature flag added to GPUI Cargo.toml
-- [x] Module wired into GPUI (`#[cfg(feature = "headless-web")] pub mod display_tree`)
-- [x] Compiles on native: `cargo check -p gpui --no-default-features --features headless-web`
-- [x] Compiles on WASM: `cargo check --target wasm32-unknown-unknown -p gpui --no-default-features --features "web,headless-web"`
+# Terminal 1: start the server
+RUST_LOG=info ./target/debug/zed_server --bind 127.0.0.1:8080
 
-## In Progress
+# Terminal 2: serve the Canvas2D PoC viewer
+cd crates/zed_server && python3 -m http.server 8888
 
-### Capture Hooks in GPUI Render Pipeline
-- [ ] Add `DisplayTreeBuilder` to Window struct (cfg-gated)
-- [ ] Hook into `Drawable::request_layout()` — capture element type, styles, children
-- [ ] Hook into `Drawable::prepaint()` — capture bounds, hitbox IDs, interaction flags
-- [ ] Hook into `Window::draw()` — hand finished tree to background thread
-- [ ] Style conversion: GPUI StyleRefinement → DisplayStyle
-- [ ] Interactivity → InteractionFlags extraction
+# Open http://127.0.0.1:8888/viewer.html
+```
 
-### Proto Schema for Wire Transport
-- [ ] Define DisplayTree message in scene.proto or new display_tree.proto
-- [ ] Define DisplayTreeDelta message
-- [ ] Define DisplayAction message (browser → server)
-- [ ] Binary serialization (bincode or postcard over serde)
+## Architecture
 
-## Planned
+The server runs full native Zed (tree-sitter, LSP, git, filesystem) inside a `StreamingPlatform` that captures a serializable `DisplayTree` during GPUI's render pipeline. Frames stream over WebSocket to a browser client. The browser is a thin rendering client -- all state lives on the server.
 
-### Delta Encoding (background thread)
-- [ ] Thread-safe handoff from render thread to serialization thread
-- [ ] Previous-frame caching for diff
-- [ ] DisplayTreeDelta patch application (for browser-side)
+```
+Zed (native) -> GPUI render -> DisplayTree capture -> JSON/WebSocket -> Browser renderer
+```
 
-### Server Binary (zed-web)
-- [ ] StreamingWindow: virtual PlatformWindow that captures DisplayTree instead of GPU rendering
-- [ ] Full Zed Workspace creation with real views over StreamingWindow
-- [ ] WebSocket server integration (reuse existing from remote_server)
-- [ ] Action dispatch: browser events → GPUI input dispatch → re-render → delta
-- [ ] Text atlas: server rasterizes glyphs to CPU bitmaps, sends as atlas deltas
+The browser will ultimately run GPUI compiled to WASM, hydrating `DisplayTree` frames into real DOM elements (positioned divs, text spans, CSS styling). DOM projection was chosen over Canvas/WebGPU so that text is natively selectable, Cmd+F works, copy/paste works, and accessibility comes free.
 
-### Browser Crate (zed_web)
-- [ ] Rename from gpui_web to zed_web (update Cargo.toml, root workspace)
-- [ ] DisplayTree hydration: deserialize → construct GPUI elements → Taffy layout → paint
-- [ ] Action forwarding: DOM events → DisplayAction → WebSocket → server
-- [ ] WebDispatcher: rAF scheduling, setTimeout for delays
-- [ ] WebTextSystem: Canvas2D measureText for text metrics
-- [ ] WebWindow: store frame callbacks, Canvas2D or WebGPU Scene renderer
-- [ ] DOM input capture: mouse, keyboard, scroll → GPUI InputEvent mapping
+## Phase 1: DisplayTree Capture -- DONE
 
-### GPUI Web Platform (make browser-side GPUI functional)
-- [ ] WebDispatcher: requestAnimationFrame for frame scheduling
-- [ ] WebTextSystem: Canvas2D text measurement for Taffy layout
-- [ ] WebWindow: frame callbacks, input dispatch, canvas-based rendering
-- [ ] WebDisplay: viewport info from browser window
+Everything needed to capture a complete, serializable snapshot of GPUI's rendered output.
+
+### DisplayTree Data Structure (`crates/gpui/src/display_tree.rs`, ~1154 lines)
+
+DisplayNode with kinds: Container, Text, Image, Svg, UniformList, List, Anchored, Canvas. DisplayStyle split into layout (Taffy properties), visual (backgrounds, borders, shadows, corners, opacity, overflow, visibility), and text (font family, size, weight, style, line height, alignment). InteractionFlags bitfield (clickable, hoverable, scrollable, focusable, draggable, focusable). DisplayTreeBuilder with stack-based construction during render walks. DisplayTreeDelta + DisplayTreePatch for diff/patch delta encoding. DisplayAction + DisplayActionKind for browser-to-server action forwarding. Compiled behind `#[cfg(feature = "headless-web")]`.
+
+### Capture Hooks
+
+All gated behind `#[cfg(feature = "headless-web")]`:
+
+- **Container capture** (`crates/gpui/src/elements/div.rs`): Interactivity::prepaint pushes a container node with full style conversion (layout, visual, interaction flags, bounds). Every div, panel, toolbar, and layout element is captured here.
+
+- **Text capture** (`crates/gpui/src/text_system/line.rs`): ShapedLine::paint() and WrappedLine::paint() push styled text nodes with decoration runs (foreground color, background highlight, underline, strikethrough). This is the single capture point for ALL painted text -- editor buffer lines, terminal output, labels, markdown preview, everything. Earlier text.rs element-level hooks were removed because ShapedLine subsumes them completely.
+
+- **SVG capture** (`crates/gpui/src/elements/svg.rs`): prepaint hook upgrades the node kind from Container to Svg with the SVG path identifier. Icons in the file tree, toolbar, and status bar are all captured.
+
+- **Image capture** (`crates/gpui/src/elements/img.rs`): prepaint hook upgrades to Image kind with Resource source (Uri, Path, or Embedded asset name) and ObjectFit mode.
+
+- **Canvas elements** (~25 call sites: git graph, circular progress, dividers): These are opaque paint closures that draw directly to the Scene. They get a Container node but the paint content is not captured. All are decorative, not content-bearing.
+
+### Streaming Infrastructure
+
+- **StreamingPlatform** (`crates/gpui/src/platform/streaming/`): CFRunLoopTimer at 120fps drives frame requests on the main thread. Resize channel (smol bounded(4)) bridges tokio WebSocket recv to main thread for thread safety. StreamingWindow implements PlatformWindow with simulate_resize() and simulate_input().
+
+- **Wire protocol**: WireFrame enum with Full/Delta/ViewportChanged variants. postcard serialize/deserialize. JSON used in the PoC viewer; postcard binary for production.
+
+- **Frame pipeline** (`crates/zed_server/src/main.rs`, ~280 lines): smol channel (render thread) -> frame_bridge (serde_json conversion, tokio task) -> tokio watch channel -> WebSocket broadcast. Watch channel means late-connecting clients get the latest frame immediately.
+
+- **zed_server binary**: Full Zed workspace initialization (AppState, client, fs, languages, node_runtime, theme, editor, workspace). Opens a real workspace via workspace::open_new() showing the welcome screen.
+
+- **Canvas2D PoC viewer** (`crates/zed_server/viewer.html`, ~343 lines): Renders DisplayTree with text runs, backgrounds, borders, shadows, rounded corners. Reports viewport size on connect and resize (debounced 150ms). Logs node kind stats every 5 seconds.
+
+### Verified Output (Welcome Screen)
+
+| Kind | Count | What |
+|------|-------|------|
+| Container | 79 | All layout: panels, toolbars, divs, status bar |
+| Text | 13 | Welcome screen labels via ShapedLine hooks |
+| Svg | 10 | Icons: file tree, toolbar, status bar |
+| Image | 0 | None on welcome screen (expected) |
+
+Frame size: ~90KB JSON, 102 nodes total.
+
+## Phase 2: WebDispatcher -- TODO
+
+Implement `crates/gpui/src/platform/web/dispatcher.rs`. Currently stubbed with unimplemented!(). This is the foundation for GPUI running in WASM -- without it, nothing can schedule work.
+
+- `dispatch()`: use `wasm_bindgen_futures::spawn_local()` to run async closures
+- `dispatch_after()`: use `web_sys::window().set_timeout_with_callback_and_timeout_and_arguments_0()` for delayed dispatch
+- `dispatch_on_main_thread()`: in WASM everything is already on the main thread, so just invoke directly (or spawn_local for async)
+- Frame scheduling: `web_sys::window().request_animation_frame()` for frame callbacks
+
+Reference: the existing web platform stubs are in `crates/gpui/src/platform/web/` (web_platform.rs, web_window.rs, web_dispatcher.rs, web_display.rs). The Linux dispatcher at `crates/gpui/src/platform/linux/dispatcher.rs` is a good structural reference.
+
+## Phase 3: Web Text System -- TODO
+
+Wire cosmic-text as the text system for wasm32, replacing the current NoopTextSystem stub. cosmic-text is pure Rust, already used in the Linux platform at `crates/gpui/src/platform/linux/text_system.rs`. It compiles to wasm32 without modification.
+
+This gives the browser-side GPUI accurate text measurement for Taffy layout, so elements are sized correctly before DOM projection.
+
+## Phase 4: DOM Renderer -- TODO
+
+Implement `WebWindow::draw()` as DOM mutations instead of Scene-to-canvas. This is where the DisplayTree becomes real browser elements:
+
+- Scene quads -> positioned `<div>` elements with CSS backgrounds, borders, border-radius, box-shadow
+- Text runs -> `<span>` elements with CSS color, font-family, font-size, text-decoration
+- SVG nodes -> inline `<svg>` or `<img>` referencing SVG assets
+- Image nodes -> `<img>` elements with object-fit CSS
+
+CSS handles all visual styling (backgrounds, borders, shadows, rounded corners, opacity, overflow, z-index). The DOM tree mirrors the DisplayTree hierarchy.
+
+Fallback: if pure DOM doesn't perform well for the editor buffer (thousands of styled spans), a hybrid approach is available -- DOM for chrome (panels, toolbars, file tree) and Canvas2D for the editor surface (a la VS Code). But try DOM-only first.
+
+## Phase 5: WebPlatform Event Wiring -- TODO
+
+Wire the browser event loop and input capture:
+
+- `requestAnimationFrame` drives the GPUI frame loop
+- DOM event listeners capture mouse (click, move, scroll), keyboard, and resize events
+- Map DOM events to GPUI `PlatformInput` variants (MouseDown, MouseUp, MouseMove, ScrollWheel, KeyDown, KeyUp, ModifiersChanged)
+- Viewport resize -> server gets ViewportChanged message (already implemented in the PoC)
+
+## Phase 6: Build Pipeline -- TODO
+
+Compile `crates/zed_web` to WASM and serve alongside `zed_server`:
+
+- wasm-pack or trunk to compile the zed_web crate targeting wasm32-unknown-unknown
+- Serve the WASM bundle, JS glue, and HTML shell from zed_server (or a static file server)
+- WebSocket connection from WASM client to zed_server for frame streaming and action dispatch
+- Integration test: full round-trip from server render -> WebSocket -> WASM client -> DOM -> user interaction -> action -> server re-render
 
 ## Architecture Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Overall approach | Element Tree Sync | No per-view rewrites, local scroll/hover/resize, all views work automatically |
+| Browser rendering | DOM projection | Native text selection, Cmd+F, copy/paste, accessibility. Canvas makes all of these impossible without full reimplementation |
 | Feature gate | Compile-time (`headless-web`) | Zero overhead when off, dead-code eliminated |
-| Style serialization | Custom DisplayStyle (not raw StyleRefinement) | Compact wire format, decoupled from GPUI internals |
-| Interaction handling | InteractionFlags + element ID forwarding | Closures can't serialize; flags tell browser what to capture, IDs map back to server closures |
+| Streaming gate | `#[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]` | Streaming infra only on the server, not in browser WASM |
+| Style serialization | Custom DisplayStyle | Compact wire format, decoupled from GPUI internals |
+| Interaction model | InteractionFlags + element ID forwarding | Closures can't serialize; flags tell browser what to capture, IDs map back to server closures |
 | Delta encoding | Tree diff with targeted patches | Most frames change very little; reduces wire bandwidth |
+| Frame delivery | tokio::sync::watch channel | Late-connecting clients get latest frame immediately, no missed-frame bugs |
 | Server rendering | CPU-only (no GPU/display needed) | Layout and Scene construction are pure computation |
-| Browser layout | GPUI WASM + Taffy (local) | Zero-latency scroll/resize, pixel-perfect match with server layout |
+| Text capture | ShapedLine::paint() hooks | Single capture point for ALL painted text regardless of source (editor, terminal, labels, markdown) |
+| Web text system | cosmic-text (pure Rust) | Already used on Linux, compiles to wasm32, accurate metrics for Taffy layout |
 
-## Dependency Graph
+## Key Files
 
 ```
-crates/zed-web (server binary)
-├── gpui [headless-web]           — DisplayTree capture
-├── workspace, editor, etc.       — Real Zed views (native)
-├── remote_server                 — WebSocket transport (reuse)
-└── StreamingWindow               — Virtual platform window
-
-crates/zed_web (browser WASM)
-├── gpui [web, headless-web]      — GPUI WASM + DisplayTree types
-├── proto                         — Wire format
-├── web-sys, wasm-bindgen         — Browser APIs
-└── serde, bincode/postcard       — Serialization
+crates/gpui/src/display_tree.rs          -- DisplayTree, all node types, builder, diff, wire protocol (~1154 lines)
+crates/gpui/src/elements/div.rs          -- Container capture hook in Interactivity::prepaint
+crates/gpui/src/text_system/line.rs      -- ShapedLine/WrappedLine paint hooks for all text capture
+crates/gpui/src/elements/svg.rs          -- SVG capture hook
+crates/gpui/src/elements/img.rs          -- Image capture hook
+crates/gpui/src/platform/streaming/      -- StreamingPlatform (CFRunLoopTimer) + StreamingWindow
+crates/gpui/src/platform/web/            -- WebPlatform, WebWindow, WebDispatcher, WebDisplay (STUBS -- Phase 2+)
+crates/zed_server/src/main.rs            -- Server binary: Zed init, frame bridge, WebSocket server (~280 lines)
+crates/zed_server/viewer.html            -- Canvas2D PoC renderer with viewport reporting (~343 lines)
+crates/zed_web/src/                      -- WASM client skeleton: lib.rs, connection.rs, remote_view.rs
 ```
+
+## Known Gotchas
+
+- `PlatformWindow` and `Platform` traits are `pub(crate)` -- implementations MUST live inside the gpui crate
+- `Pixels.0` is `pub(crate)` -- external crates must use `f32::from(pixels)`
+- `smol::Timer::after` is disallowed by clippy.toml -- use `gpui::BackgroundExecutor::timer()`
+- `headless-web` feature needs font-kit on macOS and pulls in screen-capture via workspace->call dependency chain
+- Session crate uses test-support feature to avoid SQLite DB -- `Session::test()`
+- `drive_frame()` inside `cx.update()` causes RefCell double-borrow panic -- fixed with CFRunLoopTimer running outside cx
+- Canvas elements (~25 call sites) are opaque paint closures -- content not captured, all decorative
+- WrappedLine bounds: use `self.layout.unwrapped_layout.width` not `self.layout.layout.width`
+- Image Resource doesn't impl Display, ObjectFit doesn't impl Debug -- use match-based string conversion
+- GPUI has 94 existing `cfg(target_arch = "wasm32")` blocks and `wasm_shims.rs` (392 lines) for reference
+- wgpu v28.0 supports `Backends::BROWSER_WEBGPU` but currently hardcoded to VULKAN|GL in wgpu_context.rs
