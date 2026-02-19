@@ -1,6 +1,8 @@
 # Zed Web -- Element Tree Sync
 
-Branch: `feature/web-view` (19 commits ahead of `personal/feature/web-view`)
+Branch: `feature/web-view` (20 commits ahead of `personal/feature/web-view`)
+
+This document is the single source of truth for any agent picking up this work. Phase 1 is complete and verified. Phases 2-6 are TODO. Read the whole file before starting -- the "Previous Attempts" and "Known Gotchas" sections exist to prevent you from repeating mistakes we already made.
 
 ## How to Run
 
@@ -164,3 +166,53 @@ crates/zed_web/src/                      -- WASM client skeleton: lib.rs, connec
 - Image Resource doesn't impl Display, ObjectFit doesn't impl Debug -- use match-based string conversion
 - GPUI has 94 existing `cfg(target_arch = "wasm32")` blocks and `wasm_shims.rs` (392 lines) for reference
 - wgpu v28.0 supports `Backends::BROWSER_WEBGPU` but currently hardcoded to VULKAN|GL in wgpu_context.rs
+
+## Previous Attempts (Dead Ends -- Do Not Retry)
+
+1. **Scene streaming over WebSocket (commit 8cba93cb9a):** Serialized GPUI Scene primitives (quads, shadows, underlines, glyphs) and rendered them on a Canvas2D in the browser. Hit 73fps but was a dead end -- Scene is a flat GPU draw list, not a semantic tree. Rendering it in the browser required porting the WGSL shader pipeline, and there was no way to get text selection, Cmd+F, copy/paste, or accessibility. Rejected in favor of Element Tree Sync.
+
+2. **Entity sync via gpui_web crate:** Attempted to synchronize GPUI entities/views to a separate WASM client that would re-render them. Compiled to WASM but required rewriting every UI view's rendering logic for the web. Fundamentally unscalable -- Zed has hundreds of views. Rejected and deleted.
+
+3. **drive_frame() inside cx.update():** Calling `drive_frame()` (which triggers GPUI rendering) while already inside a `cx.update()` closure causes a RefCell double-borrow panic. The fix was CFRunLoopTimer running on the main thread *outside* the GPUI context, which requests frames at 120fps independently.
+
+4. **Broadcast channel for frame delivery:** tokio::sync::broadcast lost frames sent before a client connected. Replaced with tokio::sync::watch, which holds the latest frame so late-connecting clients immediately get the current state.
+
+5. **Canvas/WebGPU for browser rendering:** Seriously considered but rejected. Canvas makes text a bitmap -- you lose native text selection, Cmd+F, right-click context menus, screen reader accessibility, and mobile text interactions. All would need full reimplementation. DOM projection gives all of these for free.
+
+6. **Text.rs prepaint hooks for text capture:** Initially added headless-web hooks in `crates/gpui/src/elements/text.rs` at the element level. These created duplicate nodes when combined with ShapedLine paint hooks, because the same text goes through both paths. Removed text.rs hooks entirely -- ShapedLine::paint() is the single capture point for ALL painted text (editor, terminal, labels, markdown, everything).
+
+## Critical Implementation Details
+
+These are internals the next agent needs to know that aren't obvious from reading the code:
+
+- **Entry point:** `Application::streaming()` in gpui returns `(App, Receiver<DisplayTree>, Sender<(f32, f32, f32)>)` -- a frame receiver and a resize sender. The zed_server binary calls this instead of `Application::new()`.
+
+- **Feature gates:** All DisplayTree capture code is behind `#[cfg(feature = "headless-web")]`. Streaming infrastructure (StreamingPlatform, frame channels) is behind `#[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]` so it compiles on the server but not in browser WASM. The `web` feature flag exists but is currently empty -- Phase 2+ will populate it.
+
+- **zed_web crate** (`crates/zed_web/`): Already exists as a skeleton. `Cargo.toml` has `crate-type = ["cdylib"]`, depends on gpui with features `['web', 'headless-web']`, plus wasm-bindgen, web-sys, js-sys, postcard. Has `lib.rs` (wasm entry), `connection.rs` (WebSocket client), `remote_view.rs` (DisplayTree hydration into GPUI divs). This is where the WASM client lives.
+
+- **Web platform stubs** (`crates/gpui/src/platform/web/`): WebPlatform, WebWindow, WebDispatcher, WebDisplay all exist as files with stub implementations (mostly `unimplemented!()`). Phase 2 starts by making WebDispatcher functional.
+
+- **cosmic-text location:** The Linux platform's text system at `crates/gpui/src/platform/linux/text_system.rs` uses cosmic-text for text shaping and layout. This is pure Rust with no system dependencies, so it compiles to wasm32 as-is. Phase 3 wires the same approach for the web platform.
+
+- **Resize flow end-to-end:** Browser sends ViewportChanged JSON over WebSocket -> tokio task receives it -> sends `(width, height, scale)` through a smol bounded(4) channel -> CFRunLoopTimer on main thread drains the channel -> calls `StreamingWindow::simulate_resize()` -> GPUI re-layouts at new size -> next frame captures the new layout. The bounded channel bridges the tokio runtime to the main thread safely.
+
+- **Editor buffer paint path:** EditorElement::paint() -> paint_lines() -> ShapedLine::paint() -> paint_line() -> window.paint_glyph(). The ShapedLine hooks intercept at paint() before glyphs go to the Scene, capturing all text with syntax highlighting colors in the decoration runs.
+
+- **Compilation command:** `cargo build -p zed_server` builds the server. gpui gets compiled with features: headless-web, font-kit (macOS), and screen-capture (pulled in transitively via workspace->call dependency chain). The headless-web feature adds postcard as a dependency.
+
+- **UniformList / file tree / symbol outline:** These use normal GPUI element rendering internally, so their children go through the standard div prepaint path and get captured as Container nodes automatically. No special handling needed.
+
+## Build Verification
+
+After any code change, verify the build compiles and the frame pipeline works:
+
+```bash
+cargo build -p zed_server 2>&1 | tail -5    # should end with "Finished"
+RUST_LOG=info ./target/debug/zed_server --bind 127.0.0.1:8080 &
+sleep 3 && curl -s -o /dev/null -w "%{http_code}" --no-buffer \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGVzdA==" \
+  http://127.0.0.1:8080  # should get 101 (switching protocols)
+kill %1
+```
