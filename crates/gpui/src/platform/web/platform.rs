@@ -1,8 +1,8 @@
 use crate::{
     AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
-    ForegroundExecutor, Keymap, NoopTextSystem, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformTextSystem, Task, ThermalState, WebDisplay, WebWindow,
-    WindowAppearance, WindowParams,
+    ForegroundExecutor, Keymap, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, Task, ThermalState, WebDisplay,
+    WebDispatcher, WebTextSystem, WebWindow, WindowAppearance, WindowParams,
 };
 use anyhow::Result;
 use std::{
@@ -26,8 +26,8 @@ impl WebPlatform {
         Rc::new(Self {
             background_executor,
             foreground_executor,
-            text_system: Arc::new(NoopTextSystem),
-            display: Rc::new(WebDisplay::default()),
+            text_system: Arc::new(WebTextSystem::new()),
+            display: Rc::new(WebDisplay::from_browser()),
         })
     }
 }
@@ -114,10 +114,22 @@ impl Platform for WebPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        let prefers_dark = web_sys::window()
+            .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
+            .map(|mql| mql.matches())
+            .unwrap_or(false);
+        if prefers_dark {
+            WindowAppearance::Dark
+        } else {
+            WindowAppearance::Light
+        }
     }
 
-    fn open_url(&self, _url: &str) {}
+    fn open_url(&self, url: &str) {
+        if let Some(window) = web_sys::window() {
+            window.open_with_url_and_target(url, "_blank").ok();
+        }
+    }
 
     fn on_open_urls(&self, _callback: Box<dyn FnMut(Vec<String>)>) {}
 
@@ -176,7 +188,37 @@ impl Platform for WebPlatform {
         Ok(PathBuf::from("/"))
     }
 
-    fn set_cursor_style(&self, _style: CursorStyle) {}
+    fn set_cursor_style(&self, style: CursorStyle) {
+        let css_cursor = match style {
+            CursorStyle::Arrow => "default",
+            CursorStyle::IBeam => "text",
+            CursorStyle::Crosshair => "crosshair",
+            CursorStyle::ClosedHand => "grabbing",
+            CursorStyle::OpenHand => "grab",
+            CursorStyle::PointingHand => "pointer",
+            CursorStyle::ResizeLeft => "w-resize",
+            CursorStyle::ResizeRight => "e-resize",
+            CursorStyle::ResizeLeftRight => "ew-resize",
+            CursorStyle::ResizeUp => "n-resize",
+            CursorStyle::ResizeDown => "s-resize",
+            CursorStyle::ResizeUpDown => "ns-resize",
+            CursorStyle::ResizeUpLeftDownRight => "nesw-resize",
+            CursorStyle::ResizeUpRightDownLeft => "nwse-resize",
+            CursorStyle::ResizeColumn => "col-resize",
+            CursorStyle::ResizeRow => "row-resize",
+            CursorStyle::IBeamCursorForVerticalLayout => "vertical-text",
+            CursorStyle::OperationNotAllowed => "not-allowed",
+            CursorStyle::DragLink => "alias",
+            CursorStyle::DragCopy => "copy",
+            CursorStyle::ContextualMenu => "context-menu",
+            CursorStyle::None => "none",
+        };
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            if let Some(body) = document.body() {
+                body.style().set_property("cursor", css_cursor).ok();
+            }
+        }
+    }
 
     fn should_auto_hide_scrollbars(&self) -> bool {
         false

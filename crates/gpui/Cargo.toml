@@ -116,6 +116,33 @@ postcard = { version = "1", features = ["alloc"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde", "js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "HtmlBodyElement",
+    "CanvasRenderingContext2d",
+    "Performance",
+    "TextMetrics",
+    "CssStyleDeclaration",
+    "Element",
+    "HtmlElement",
+    "EventTarget",
+    "Event",
+    "MouseEvent",
+    "WheelEvent",
+    "KeyboardEvent",
+    "FocusEvent",
+    "UiEvent",
+    "DomRect",
+    "MediaQueryList",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "ResizeObserverSize",
+] }
 
 # Dependencies that require native OS support (threads, filesystem, etc.)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

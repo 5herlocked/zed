@@ -59,6 +59,13 @@ impl StreamingPlatform {
         let dispatcher: Arc<dyn crate::PlatformDispatcher> =
             Arc::new(crate::platform::MacDispatcher::new());
 
+        #[cfg(all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(target_os = "macos")
+        ))]
+        let dispatcher: Arc<dyn crate::PlatformDispatcher> =
+            Arc::new(StreamingDispatcher::new());
+
         #[cfg(target_os = "macos")]
         let text_system: Arc<dyn PlatformTextSystem> =
             Arc::new(crate::platform::MacTextSystem::new());
@@ -394,5 +401,68 @@ impl crate::PlatformKeyboardLayout for StreamingKeyboardLayout {
 
     fn name(&self) -> &str {
         "US"
+    }
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "freebsd"),
+    not(target_os = "macos")
+))]
+struct StreamingDispatcher {
+    main_thread_id: std::thread::ThreadId,
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "freebsd"),
+    not(target_os = "macos")
+))]
+impl StreamingDispatcher {
+    fn new() -> Self {
+        Self {
+            main_thread_id: std::thread::current().id(),
+        }
+    }
+}
+
+#[cfg(all(
+    any(target_os = "linux", target_os = "freebsd"),
+    not(target_os = "macos")
+))]
+impl crate::PlatformDispatcher for StreamingDispatcher {
+    fn get_all_timings(&self) -> Vec<crate::ThreadTaskTimings> {
+        Vec::new()
+    }
+
+    fn get_current_thread_timings(&self) -> Vec<crate::TaskTiming> {
+        Vec::new()
+    }
+
+    fn is_main_thread(&self) -> bool {
+        std::thread::current().id() == self.main_thread_id
+    }
+
+    fn dispatch(&self, runnable: crate::RunnableVariant, _priority: crate::Priority) {
+        smol::spawn(async move { runnable.run() }).detach();
+    }
+
+    fn dispatch_on_main_thread(
+        &self,
+        runnable: crate::RunnableVariant,
+        _priority: crate::Priority,
+    ) {
+        // In streaming mode without a run loop, run immediately.
+        runnable.run();
+    }
+
+    fn dispatch_after(&self, duration: std::time::Duration, runnable: crate::RunnableVariant) {
+        smol::spawn(async move {
+            smol::Timer::after(duration).await;
+            runnable.run();
+        })
+        .detach();
+    }
+
+    fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
+        std::thread::spawn(f);
     }
 }

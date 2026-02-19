@@ -1,4 +1,4 @@
-use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, Point, px};
+use crate::{Bounds, DisplayId, Pixels, PlatformDisplay, Point, Size, px};
 use anyhow::Result;
 
 #[derive(Debug)]
@@ -14,6 +14,31 @@ impl Default for WebDisplay {
             id: DisplayId(1),
             uuid: uuid::Uuid::nil(),
             bounds: Bounds::from_corners(Point::default(), Point::new(px(1920.), px(1080.))),
+        }
+    }
+}
+
+impl WebDisplay {
+    /// Read the display size from the browser window, falling back to defaults.
+    pub fn from_browser() -> Self {
+        let (width, height) = web_sys::window()
+            .map(|w| {
+                let width = w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(1920.0);
+                let height = w.inner_height().ok().and_then(|v| v.as_f64()).unwrap_or(1080.0);
+                (width as f32, height as f32)
+            })
+            .unwrap_or((1920.0, 1080.0));
+
+        Self {
+            id: DisplayId(1),
+            uuid: uuid::Uuid::nil(),
+            bounds: Bounds {
+                origin: Point::default(),
+                size: Size {
+                    width: px(width),
+                    height: px(height),
+                },
+            },
         }
     }
 }

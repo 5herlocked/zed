@@ -147,7 +147,7 @@ pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
-    let dispatcher = Arc::new(web::WebDispatcher);
+    let dispatcher = Arc::new(web::WebDispatcher::new());
     web::WebPlatform::new(
         BackgroundExecutor::new(dispatcher.clone()),
         ForegroundExecutor::new(dispatcher),
