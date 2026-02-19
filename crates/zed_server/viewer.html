@@ -255,6 +255,7 @@
     // --- WebSocket ---
     let frameCount = 0;
     let lastTime = performance.now();
+    let lastTree = null;
 
     const ws = new WebSocket('ws://127.0.0.1:8080');
     ws.binaryType = 'arraybuffer';
@@ -282,6 +283,7 @@
         const text = new TextDecoder().decode(event.data);
         const tree = JSON.parse(text);
         paintFrame(tree);
+        lastTree = tree;
 
         const bytes = event.data.byteLength;
         const nodes = countNodes(tree.root);
@@ -308,6 +310,22 @@
       for (const child of (node.children || [])) count += countNodes(child);
       return count;
     }
+
+    function countNodeKinds(node, acc = {}) {
+      if (!node) return acc;
+      const { variant } = parseKind(node.kind);
+      acc[variant] = (acc[variant] || 0) + 1;
+      for (const child of (node.children || [])) countNodeKinds(child, acc);
+      return acc;
+    }
+
+    // Log node kind stats every 60 frames (~0.5s).
+    setInterval(() => {
+      if (lastTree) {
+        const kinds = countNodeKinds(lastTree.root);
+        console.log(`Frame ${frameCount} kinds:`, kinds);
+      }
+    }, 5000);
 
     // Debounced resize: send new viewport when browser window changes.
     let resizeTimer = null;
