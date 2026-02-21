@@ -5,7 +5,7 @@ use futures::stream::StreamExt;
 use futures::{SinkExt, TryStreamExt};
 use git::GitHostingProviderRegistry;
 use gpui::{AppContext as _, display_tree::DisplayTree};
-use gpui::{Application, PlatformInput, StreamingConfig};
+use gpui::{Application, StreamingConfig};
 use language::LanguageRegistry;
 use log::{error, info};
 use std::net::SocketAddr;
@@ -14,8 +14,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch as tokio_watch;
 use tokio_tungstenite::tungstenite::Message;
 use workspace::AppState;
-
-mod input_parser;
 
 #[derive(Parser)]
 #[command(name = "zed_server", about = "Zed Web streaming server")]
@@ -47,7 +45,7 @@ fn main() -> Result<()> {
         scale_factor: args.scale,
     };
 
-    let (app, frame_rx, resize_tx) = Application::streaming(config);
+    let (app, frame_rx, resize_tx, _input_tx) = Application::streaming(config);
 
     let bind_addr = args.bind;
     // Watch channel holds the latest frame -- new clients get it immediately.
