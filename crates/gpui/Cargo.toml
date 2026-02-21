@@ -28,7 +28,7 @@ test-support = [
 ]
 inspector = ["gpui_macros/inspector"]
 leak-detection = ["backtrace"]
-headless-web = ["postcard"]
+headless-web = ["prost"]
 runtime_shaders = []
 wayland = [
     "bitflags",
@@ -112,7 +112,7 @@ lyon = "1.0"
 pin-project = "1.1.10"
 circular-buffer.workspace = true
 spin = "0.10.0"
-postcard = { version = "1", features = ["alloc"], optional = true }
+prost = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde", "js"] }
@@ -268,6 +268,9 @@ reqwest_client = { workspace = true, features = ["test-support"] }
 scheduler = { workspace = true, features = ["test-support"] }
 unicode-segmentation.workspace = true
 util = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+prost-build.workspace = true
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3.0"

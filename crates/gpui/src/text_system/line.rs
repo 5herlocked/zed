@@ -76,7 +76,7 @@ impl ShapedLine {
             if let Some(builder) = window.display_tree_builder.as_mut() {
                 let bounds = Bounds::new(origin, size(self.layout.width, line_height));
                 let runs = self.decoration_runs.iter().map(|r| DisplayTextRun {
-                    len: r.len as usize,
+                    len: r.len as u64,
                     color: Some(DisplayColor::from_hsla(r.color)),
                     font_weight: None,
                     italic: false,
@@ -167,7 +167,7 @@ impl WrappedLine {
                 let height = line_height * (self.layout.wrap_boundaries.len() as f32 + 1.);
                 let bounds = Bounds::new(origin, size(self.layout.unwrapped_layout.width, height));
                 let runs = self.decoration_runs.iter().map(|r| DisplayTextRun {
-                    len: r.len as usize,
+                    len: r.len as u64,
                     color: Some(DisplayColor::from_hsla(r.color)),
                     font_weight: None,
                     italic: false,

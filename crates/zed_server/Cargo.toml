@@ -29,7 +29,7 @@ language.workspace = true
 log.workspace = true
 node_runtime.workspace = true
 paths.workspace = true
-postcard = { version = "1", features = ["alloc"] }
+prost.workspace = true
 project.workspace = true
 release_channel.workspace = true
 reqwest_client.workspace = true

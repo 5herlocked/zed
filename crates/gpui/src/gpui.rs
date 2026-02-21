@@ -18,6 +18,7 @@ mod color;
 /// The default colors used by GPUI.
 pub mod colors;
 #[cfg(feature = "headless-web")]
+#[allow(missing_docs)]
 pub mod display_tree;
 mod element;
 mod elements;

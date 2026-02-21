@@ -104,9 +104,13 @@ impl Element for Svg {
             if let Some(builder) = window.display_tree_builder.as_mut() {
                 let path = self.path.as_ref().or(self.external_path.as_ref());
                 if let Some(path) = path {
-                    builder.set_current_kind(crate::display_tree::DisplayNodeKind::Svg {
-                        path: path.to_string(),
-                        color: None,
+                    builder.set_current_kind(crate::display_tree::DisplayNodeKind {
+                        kind: Some(crate::display_tree::display_node_kind::Kind::Svg(
+                            crate::display_tree::SvgKind {
+                                path: path.to_string(),
+                                color: None,
+                            },
+                        )),
                     });
                 }
             }

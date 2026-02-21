@@ -5,7 +5,7 @@ use futures::stream::StreamExt;
 use futures::{SinkExt, TryStreamExt};
 use git::GitHostingProviderRegistry;
 use gpui::{AppContext as _, display_tree::DisplayTree};
-use gpui::{Application, StreamingConfig};
+use gpui::{Application, PlatformInput, StreamingConfig};
 use language::LanguageRegistry;
 use log::{error, info};
 use std::net::SocketAddr;
@@ -14,6 +14,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch as tokio_watch;
 use tokio_tungstenite::tungstenite::Message;
 use workspace::AppState;
+
+mod input_parser;
 
 #[derive(Parser)]
 #[command(name = "zed_server", about = "Zed Web streaming server")]
@@ -148,17 +150,19 @@ fn main() -> Result<()> {
 }
 
 /// Reads DisplayTree frames from GPUI's smol channel and publishes
-/// the latest serialized JSON to the watch channel.
+/// the latest protobuf-encoded bytes to the watch channel.
 async fn frame_bridge(
     frame_rx: smol::channel::Receiver<DisplayTree>,
     watch_tx: tokio_watch::Sender<Bytes>,
 ) {
+    use prost::Message as _;
     loop {
         match frame_rx.recv().await {
             Ok(tree) => {
-                match serde_json::to_vec(&tree) {
-                    Ok(json) => {
-                        let _ = watch_tx.send(Bytes::from(json));
+                let mut buf = Vec::with_capacity(tree.encoded_len());
+                match tree.encode(&mut buf) {
+                    Ok(()) => {
+                        let _ = watch_tx.send(Bytes::from(buf));
                     }
                     Err(e) => error!("frame serialization failed: {e}"),
                 }
@@ -171,7 +175,9 @@ async fn frame_bridge(
     }
 }
 
-/// Accepts WebSocket connections and sends the latest frame + future frames.
+const VIEWER_HTML: &str = include_str!("../viewer.html");
+
+/// Accepts WebSocket connections and serves the viewer HTML for regular HTTP requests.
 async fn run_websocket_server(
     addr: SocketAddr,
     watch_rx: tokio_watch::Receiver<Bytes>,
@@ -185,8 +191,51 @@ async fn run_websocket_server(
         info!("new connection from {peer}");
         let rx = watch_rx.clone();
         let rtx = resize_tx.clone();
-        tokio::spawn(handle_client(stream, peer, rx, rtx));
+        tokio::spawn(handle_connection(stream, peer, rx, rtx));
     }
+}
+
+/// Peek at the incoming bytes to determine if this is a WebSocket upgrade
+/// or a plain HTTP request. Serve viewer.html for the latter.
+async fn handle_connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    watch_rx: tokio_watch::Receiver<Bytes>,
+    resize_tx: smol::channel::Sender<(f32, f32, f32)>,
+) {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut buf = [0u8; 4096];
+    let stream = match stream.peek(&mut buf).await {
+        Ok(n) => {
+            let request = String::from_utf8_lossy(&buf[..n]);
+            if request.contains("Upgrade: websocket") || request.contains("upgrade: websocket") {
+                handle_client(stream, peer, watch_rx, resize_tx).await;
+                return;
+            }
+            stream
+        }
+        Err(e) => {
+            error!("peek failed for {peer}: {e}");
+            return;
+        }
+    };
+
+    // Read the HTTP request to consume it from the buffer.
+    let mut stream = stream;
+    let n = match stream.read(&mut buf).await {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+    let _ = n;
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        VIEWER_HTML.len(),
+        VIEWER_HTML,
+    );
+    stream.write_all(response.as_bytes()).await.ok();
 }
 
 /// Handles a single WebSocket client: sends current + future frames.
@@ -237,36 +286,30 @@ async fn handle_client(
 
     let peer_recv = peer;
     let recv_task = tokio::spawn(async move {
+        use gpui::display_tree::{WireFrame, wire_frame};
+        use prost::Message as _;
         while let Ok(Some(msg)) = ws_rx.try_next().await {
-            match msg {
-                Message::Text(text) => {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(vc) = val.get("ViewportChanged") {
-                            let w = vc.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                            let h = vc.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                            let s = vc.get("scale_factor").and_then(|v| v.as_f64()).unwrap_or(2.0) as f32;
-                            if w > 0.0 && h > 0.0 {
-                                info!("{peer_recv} viewport: {w}x{h} @{s}x");
-                                let _ = resize_tx.try_send((w, h, s));
-                            }
-                        }
-                    }
-                }
-                Message::Binary(data) => {
-                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&data) {
-                        if let Some(vc) = val.get("ViewportChanged") {
-                            let w = vc.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                            let h = vc.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                            let s = vc.get("scale_factor").and_then(|v| v.as_f64()).unwrap_or(2.0) as f32;
-                            if w > 0.0 && h > 0.0 {
-                                info!("{peer_recv} viewport: {w}x{h} @{s}x");
-                                let _ = resize_tx.try_send((w, h, s));
-                            }
-                        }
-                    }
-                }
+            let data: Vec<u8> = match msg {
+                Message::Binary(data) => data.to_vec(),
+                Message::Text(text) => text.as_bytes().to_vec(),
                 Message::Close(_) => break,
-                _ => {}
+                _ => continue,
+            };
+            match WireFrame::decode(data.as_slice()) {
+                Ok(frame) => {
+                    if let Some(wire_frame::Frame::ViewportChanged(vc)) = frame.frame {
+                        let w = vc.width;
+                        let h = vc.height;
+                        let s = vc.scale_factor;
+                        if w > 0.0 && h > 0.0 {
+                            info!("{peer_recv} viewport: {w}x{h} @{s}x");
+                            let _ = resize_tx.try_send((w, h, s));
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::debug!("{peer_recv} failed to decode WireFrame: {e}");
+                }
             }
         }
         info!("{peer_recv} recv loop ended");

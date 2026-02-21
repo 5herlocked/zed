@@ -1,0 +1,365 @@
+syntax = "proto3";
+package gpui.display_tree;
+
+message DisplayNodeId {
+    uint64 id = 1;
+}
+
+message InteractionFlags {
+    uint32 flags = 1;
+}
+
+message DisplayNode {
+    DisplayNodeId id = 1;
+    optional string element_id = 2;
+    DisplayNodeKind kind = 3;
+    DisplayStyle style = 4;
+    optional Bounds bounds = 5;
+    optional Size content_size = 6;
+    InteractionFlags interactions = 7;
+    repeated DisplayNode children = 8;
+}
+
+message DisplayNodeKind {
+    oneof kind {
+        ContainerKind container = 1;
+        TextKind text = 2;
+        InteractiveTextKind interactive_text = 3;
+        ImageKind image = 4;
+        SvgKind svg = 5;
+        UniformListKind uniform_list = 6;
+        ListKind list = 7;
+        AnchoredKind anchored = 8;
+        CanvasKind canvas = 9;
+    }
+}
+
+message ContainerKind {
+    optional Point scroll_offset = 1;
+    optional string group = 2;
+}
+
+message TextKind {
+    string content = 1;
+    repeated DisplayTextRun runs = 2;
+}
+
+message InteractiveTextKind {
+    string content = 1;
+    repeated DisplayTextRun runs = 2;
+    repeated ByteRange clickable_ranges = 3;
+}
+
+message ByteRange {
+    uint64 start = 1;
+    uint64 end = 2;
+}
+
+message ImageKind {
+    DisplayImageSource source = 1;
+    optional string object_fit = 2;
+    bool grayscale = 3;
+}
+
+message SvgKind {
+    string path = 1;
+    optional DisplayColor color = 2;
+}
+
+message UniformListKind {
+    uint64 total_items = 1;
+    float item_height = 2;
+    uint64 visible_range_start = 3;
+    uint64 visible_range_end = 4;
+    float scroll_offset = 5;
+}
+
+message ListKind {
+    uint64 total_items = 1;
+    uint64 visible_range_start = 2;
+    uint64 visible_range_end = 3;
+    float scroll_offset = 4;
+}
+
+message AnchoredKind {
+    string anchor_corner = 1;
+}
+
+message CanvasKind {
+    optional bytes rasterized = 1;
+    uint32 rasterized_width = 2;
+    uint32 rasterized_height = 3;
+}
+
+message DisplayTextRun {
+    uint64 len = 1;
+    optional DisplayColor color = 2;
+    optional uint32 font_weight = 3;
+    bool italic = 4;
+    bool underline = 5;
+    bool strikethrough = 6;
+    optional DisplayColor background = 7;
+}
+
+message DisplayImageSource {
+    oneof source {
+        string uri = 1;
+        bytes data = 2;
+    }
+}
+
+message DisplayStyle {
+    DisplayLayoutStyle display = 1;
+    DisplayVisualStyle visual = 2;
+    optional DisplayTextStyle text = 3;
+}
+
+message DisplayLayoutStyle {
+    optional string display = 1;
+    optional string flex_direction = 2;
+    optional float flex_grow = 3;
+    optional float flex_shrink = 4;
+    optional DisplayLength width = 5;
+    optional DisplayLength height = 6;
+    optional DisplayLength min_width = 7;
+    optional DisplayLength max_width = 8;
+    optional DisplayLength min_height = 9;
+    optional DisplayLength max_height = 10;
+    repeated DisplayLength padding = 11;
+    repeated DisplayLength margin = 12;
+    optional DisplayLength gap = 13;
+    optional string align_items = 14;
+    optional string justify_content = 15;
+    optional string position = 16;
+    optional string overflow_x = 17;
+    optional string overflow_y = 18;
+}
+
+message DisplayVisualStyle {
+    optional DisplayColor background = 1;
+    optional DisplayColor border_color = 2;
+    repeated float border_widths = 3;
+    repeated float corner_radii = 4;
+    repeated DisplayBoxShadow box_shadows = 5;
+    optional float opacity = 6;
+    optional string cursor = 7;
+    bool visible = 8;
+}
+
+message DisplayColor {
+    float r = 1;
+    float g = 2;
+    float b = 3;
+    float a = 4;
+}
+
+message DisplayBoxShadow {
+    float offset_x = 1;
+    float offset_y = 2;
+    float blur = 3;
+    float spread = 4;
+    DisplayColor color = 5;
+}
+
+message DisplayTextStyle {
+    optional string font_family = 1;
+    optional float font_size = 2;
+    optional uint32 font_weight = 3;
+    optional string font_style = 4;
+    optional DisplayColor color = 5;
+    optional float line_height = 6;
+}
+
+message DisplayLength {
+    oneof length {
+        float px = 1;
+        float percent = 2;
+        bool auto = 3;
+    }
+}
+
+message Point {
+    float x = 1;
+    float y = 2;
+}
+
+message Size {
+    float width = 1;
+    float height = 2;
+}
+
+message Bounds {
+    Point origin = 1;
+    Size size = 2;
+}
+
+message DisplayTree {
+    uint64 frame_id = 1;
+    Size viewport = 2;
+    DisplayNode root = 3;
+}
+
+message DisplayTreeDelta {
+    uint64 frame_id = 1;
+    uint64 base_frame_id = 2;
+    repeated DisplayTreePatch patches = 3;
+}
+
+message DisplayTreePatch {
+    oneof patch {
+        ReplaceNodePatch replace_node = 1;
+        UpdateStylePatch update_style = 2;
+        UpdateTextPatch update_text = 3;
+        UpdateBoundsPatch update_bounds = 4;
+        UpdateScrollOffsetPatch update_scroll_offset = 5;
+        InsertChildPatch insert_child = 6;
+        RemoveChildPatch remove_child = 7;
+        UpdateListRangePatch update_list_range = 8;
+    }
+}
+
+message ReplaceNodePatch {
+    DisplayNodeId target = 1;
+    DisplayNode node = 2;
+}
+
+message UpdateStylePatch {
+    DisplayNodeId target = 1;
+    DisplayStyle style = 2;
+}
+
+message UpdateTextPatch {
+    DisplayNodeId target = 1;
+    string content = 2;
+    repeated DisplayTextRun runs = 3;
+}
+
+message UpdateBoundsPatch {
+    DisplayNodeId target = 1;
+    Bounds bounds = 2;
+}
+
+message UpdateScrollOffsetPatch {
+    DisplayNodeId target = 1;
+    Point offset = 2;
+}
+
+message InsertChildPatch {
+    DisplayNodeId parent = 1;
+    uint64 index = 2;
+    DisplayNode node = 3;
+}
+
+message RemoveChildPatch {
+    DisplayNodeId parent = 1;
+    uint64 index = 2;
+}
+
+message UpdateListRangePatch {
+    DisplayNodeId target = 1;
+    uint64 visible_range_start = 2;
+    uint64 visible_range_end = 3;
+    float scroll_offset = 4;
+    repeated DisplayNode children = 5;
+}
+
+message DisplayAction {
+    DisplayNodeId node_id = 1;
+    optional string element_id = 2;
+    DisplayActionKind action = 3;
+}
+
+message DisplayActionKind {
+    oneof action {
+        ClickAction click = 1;
+        MouseDownAction mouse_down = 2;
+        MouseUpAction mouse_up = 3;
+        HoverAction hover = 4;
+        ScrollAction scroll = 5;
+        KeyDownAction key_down = 6;
+        KeyUpAction key_up = 7;
+        ResizeAction resize = 8;
+    }
+}
+
+message ClickAction {
+    Point position = 1;
+    uint32 button = 2;
+    uint32 click_count = 3;
+    DisplayModifiers modifiers = 4;
+}
+
+message MouseDownAction {
+    Point position = 1;
+    uint32 button = 2;
+    DisplayModifiers modifiers = 3;
+}
+
+message MouseUpAction {
+    Point position = 1;
+    uint32 button = 2;
+    DisplayModifiers modifiers = 3;
+}
+
+message HoverAction {
+    bool entered = 1;
+}
+
+message ScrollAction {
+    Point delta = 1;
+    DisplayModifiers modifiers = 2;
+}
+
+message KeyDownAction {
+    string key = 1;
+    DisplayModifiers modifiers = 2;
+}
+
+message KeyUpAction {
+    string key = 1;
+    DisplayModifiers modifiers = 2;
+}
+
+message ResizeAction {
+    Size size = 1;
+}
+
+message DisplayModifiers {
+    bool control = 1;
+    bool alt = 2;
+    bool shift = 3;
+    bool meta = 4;
+}
+
+message WireFrame {
+    oneof frame {
+        DisplayTree snapshot = 1;
+        DisplayTreeDelta delta = 2;
+        DisplayAction action = 3;
+        ActionAck action_ack = 4;
+        Empty request_snapshot = 5;
+        SetViewport set_viewport = 6;
+        ViewportChanged viewport_changed = 7;
+        uint64 ping = 8;
+        uint64 pong = 9;
+    }
+}
+
+message ActionAck {
+    DisplayNodeId node_id = 1;
+    uint64 result_frame_id = 2;
+}
+
+message Empty {}
+
+message SetViewport {
+    float width = 1;
+    float height = 2;
+    float scale_factor = 3;
+}
+
+message ViewportChanged {
+    float width = 1;
+    float height = 2;
+    float scale_factor = 3;
+}

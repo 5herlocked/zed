@@ -385,11 +385,16 @@ impl Element for UniformList {
                                 .ceil() as usize;
                             first..std::cmp::min(last, self.item_count)
                         };
-                        builder.set_current_kind(crate::display_tree::DisplayNodeKind::UniformList {
-                            total_items: self.item_count,
-                            item_height: item_height.0,
-                            visible_range,
-                            scroll_offset: scroll_offset.y.0,
+                        builder.set_current_kind(crate::display_tree::DisplayNodeKind {
+                            kind: Some(crate::display_tree::display_node_kind::Kind::UniformList(
+                                crate::display_tree::UniformListKind {
+                                    total_items: self.item_count as u64,
+                                    item_height: item_height.0,
+                                    visible_range_start: visible_range.start as u64,
+                                    visible_range_end: visible_range.end as u64,
+                                    scroll_offset: scroll_offset.y.0,
+                                },
+                            )),
                         });
                     }
                 }

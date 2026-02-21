@@ -4,6 +4,8 @@
 use std::env;
 
 fn main() {
+    compile_display_tree_proto();
+
     let target = env::var("CARGO_CFG_TARGET_OS");
     println!("cargo::rustc-check-cfg=cfg(gles)");
 
@@ -18,6 +20,15 @@ fn main() {
         }
         _ => (),
     };
+}
+
+fn compile_display_tree_proto() {
+    println!("cargo:rerun-if-changed=proto/display_tree.proto");
+    let mut config = prost_build::Config::new();
+    config.btree_map(["."]);
+    config
+        .compile_protos(&["proto/display_tree.proto"], &["proto"])
+        .expect("failed to compile display_tree.proto");
 }
 
 #[cfg(target_os = "macos")]

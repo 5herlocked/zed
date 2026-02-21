@@ -176,9 +176,10 @@ impl Application {
 
     /// Build an app in streaming mode for web transport.
     ///
-    /// Returns (AppContext, frame_rx) where frame_rx receives a `DisplayTree`
-    /// after every render frame. The caller (zed_web server) reads from
-    /// frame_rx, serializes, and ships over WebSocket.
+    /// Returns (Application, frame_rx, resize_tx, input_tx) where:
+    /// - frame_rx receives a `DisplayTree` after every render frame
+    /// - resize_tx sends viewport resize events (width, height, scale_factor)
+    /// - input_tx sends user input events (mouse, keyboard, scroll)
     #[cfg(all(feature = "headless-web", not(target_arch = "wasm32")))]
     pub fn streaming(
         config: crate::StreamingConfig,
@@ -186,16 +187,18 @@ impl Application {
         Self,
         smol::channel::Receiver<crate::display_tree::DisplayTree>,
         smol::channel::Sender<(f32, f32, f32)>,
+        smol::channel::Sender<crate::PlatformInput>,
     ) {
         use crate::StreamingPlatform;
 
         let (frame_tx, frame_rx) = smol::channel::bounded(2);
         let (resize_tx, resize_rx) = smol::channel::bounded(4);
+        let (input_tx, input_rx) = smol::channel::bounded(64);
 
-        let platform = StreamingPlatform::new(config, frame_tx, resize_rx);
+        let platform = StreamingPlatform::new(config, frame_tx, resize_rx, input_rx);
 
         let app = Self(App::new_app(platform, Arc::new(()), Arc::new(NullHttpClient)));
-        (app, frame_rx, resize_tx)
+        (app, frame_rx, resize_tx, input_tx)
     }
 
     /// Assigns the source of assets for the application.

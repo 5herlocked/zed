@@ -458,7 +458,9 @@ impl Element for Img {
                             crate::Resource::Path(p) => Some(format!("{}", p.display())),
                             crate::Resource::Embedded(name) => Some(name.to_string()),
                         };
-                        uri_str.map(crate::display_tree::DisplayImageSource::Uri)
+                        uri_str.map(|uri| crate::display_tree::DisplayImageSource {
+                            source: Some(crate::display_tree::display_image_source::Source::Uri(uri)),
+                        })
                     }
                     _ => None,
                 };
@@ -470,10 +472,14 @@ impl Element for Img {
                         crate::ObjectFit::ScaleDown => "ScaleDown",
                         crate::ObjectFit::None => "None",
                     }.to_string());
-                    builder.set_current_kind(crate::display_tree::DisplayNodeKind::Image {
-                        source,
-                        object_fit,
-                        grayscale: self.style.grayscale,
+                    builder.set_current_kind(crate::display_tree::DisplayNodeKind {
+                        kind: Some(crate::display_tree::display_node_kind::Kind::Image(
+                            crate::display_tree::ImageKind {
+                                source: Some(source),
+                                object_fit,
+                                grayscale: self.style.grayscale,
+                            },
+                        )),
                     });
                 }
             }

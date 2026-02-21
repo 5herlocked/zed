@@ -30,6 +30,11 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+# Node.js (needed for npx-based MCP servers like Playwright)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Rust toolchain as the vscode user
 USER vscode
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

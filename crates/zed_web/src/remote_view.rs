@@ -1,11 +1,12 @@
 use std::rc::Rc;
 
 use gpui::display_tree::{
-    DisplayColor, DisplayNode, DisplayNodeKind, DisplayTree, WireFrame,
+    display_node_kind, wire_frame, DisplayColor, DisplayModifiers, DisplayNode, DisplayTree,
+    InteractionFlags, WireFrame,
 };
 use gpui::{
-    div, px, AnyElement, Context, IntoElement, ParentElement, Render, Rgba, SharedString, Styled,
-    Window,
+    div, px, AnyElement, Context, Div, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, Rgba, SharedString, Styled, Window,
 };
 
 use crate::Connection;
@@ -18,7 +19,7 @@ use crate::Connection;
 ///
 /// Every DisplayNode maps to a GPUI div positioned absolutely using the
 /// server-computed bounds. This avoids needing a local text measurement system
-/// for v1 -- the server already ran Taffy with real font metrics.
+/// for v1 — the server already ran Taffy with real font metrics.
 pub struct RemoteView {
     tree: Option<DisplayTree>,
     connection: Rc<Connection>,
@@ -34,140 +35,184 @@ impl RemoteView {
 
     /// Process an incoming WireFrame from the server.
     pub fn apply_frame(&mut self, frame: WireFrame) {
-        match frame {
-            WireFrame::Snapshot(tree) => {
-                log::debug!(
-                    "frame {} received ({}x{} viewport)",
-                    tree.frame_id,
-                    f32::from(tree.viewport.width),
-                    f32::from(tree.viewport.height),
-                );
+        let Some(inner) = frame.frame else { return };
+        match inner {
+            wire_frame::Frame::Snapshot(tree) => {
+                if let Some(viewport) = &tree.viewport {
+                    log::debug!(
+                        "frame {} received ({}x{} viewport)",
+                        tree.frame_id,
+                        viewport.width,
+                        viewport.height,
+                    );
+                }
                 self.tree = Some(tree);
             }
-            WireFrame::Delta(delta) => {
+            wire_frame::Frame::Delta(delta) => {
                 log::debug!(
                     "delta for frame {} (base {}, {} patches)",
                     delta.frame_id,
                     delta.base_frame_id,
                     delta.patches.len(),
                 );
-                // Delta application deferred -- request a full snapshot instead.
-                let request = WireFrame::RequestSnapshot;
-                self.connection.send(&request).ok();
+                // We don't apply deltas yet — request a full snapshot instead.
+                self.connection.request_snapshot().ok();
             }
-            WireFrame::ActionAck {
-                node_id,
-                result_frame_id,
-            } => {
+            wire_frame::Frame::ActionAck(ack) => {
                 log::debug!(
                     "action ack: node {:?} -> frame {}",
-                    node_id,
-                    result_frame_id,
+                    ack.node_id,
+                    ack.result_frame_id,
                 );
             }
-            WireFrame::SetViewport {
-                width,
-                height,
-                scale_factor,
-            } => {
+            wire_frame::Frame::SetViewport(sv) => {
                 log::info!(
                     "server viewport: {}x{} @{}x",
-                    width,
-                    height,
-                    scale_factor,
+                    sv.width,
+                    sv.height,
+                    sv.scale_factor,
                 );
             }
-            WireFrame::Ping(seq) => {
-                self.connection.send(&WireFrame::Pong(seq)).ok();
+            wire_frame::Frame::Ping(seq) => {
+                self.connection.send_pong(seq).ok();
             }
             _ => {}
         }
     }
 
-    /// Convert a DisplayNode subtree into GPUI elements.
-    ///
-    /// Each node becomes a div positioned using server-computed bounds.
-    /// Children are nested inside their parent for correct paint order.
+    /// Convert a DisplayNode subtree into GPUI elements, attaching interaction
+    /// handlers for nodes that have the appropriate InteractionFlags set.
     fn render_node(&self, node: &DisplayNode) -> AnyElement {
         let mut el = div();
 
         if let Some(bounds) = &node.bounds {
-            el = el
-                .absolute()
-                .left(px(f32::from(bounds.origin.x)))
-                .top(px(f32::from(bounds.origin.y)))
-                .w(px(f32::from(bounds.size.width)))
-                .h(px(f32::from(bounds.size.height)));
+            if let (Some(origin), Some(size)) = (&bounds.origin, &bounds.size) {
+                el = el
+                    .absolute()
+                    .left(px(origin.x))
+                    .top(px(origin.y))
+                    .w(px(size.width))
+                    .h(px(size.height));
+            }
         }
 
-        if let Some(bg) = &node.style.visual.background {
+        el = apply_visual_style(el, node);
+
+        let flags = node.interactions.as_ref().map(|i| i.flags).unwrap_or(0);
+        let node_id = node.id.as_ref().map(|id| id.id).unwrap_or(0);
+        let element_id = node.element_id.clone();
+
+        // Attach click handler if the node is clickable.
+        if flags & InteractionFlags::CLICKABLE != 0 {
+            let conn = self.connection.clone();
+            let eid = element_id.clone();
+            el = el.on_mouse_down(MouseButton::Left, move |event, _window, _cx| {
+                let x: f32 = event.position.x.into();
+                let y: f32 = event.position.y.into();
+                conn.send_click(node_id, eid.clone(), x, y, 0, 1, DisplayModifiers::default())
+                    .ok();
+            });
+        }
+
+        // Attach scroll handler if the node is scrollable.
+        if flags & InteractionFlags::SCROLLABLE != 0 {
+            let conn = self.connection.clone();
+            let eid = element_id.clone();
+            el = el.on_scroll_wheel(move |event, _window, _cx| {
+                let delta = event.delta.pixel_delta(px(1.0));
+                let dx: f32 = delta.x.into();
+                let dy: f32 = delta.y.into();
+                conn.send_scroll(node_id, eid.clone(), dx, dy, DisplayModifiers::default())
+                    .ok();
+            });
+        }
+
+        let kind = node.kind.as_ref().and_then(|k| k.kind.as_ref());
+
+        match kind {
+            Some(display_node_kind::Kind::Container(_)) => {
+                let children: Vec<AnyElement> = node
+                    .children
+                    .iter()
+                    .map(|child| self.render_node(child))
+                    .collect();
+                el.children(children).into_any_element()
+            }
+
+            Some(display_node_kind::Kind::Text(text)) => el
+                .child(SharedString::from(text.content.clone()))
+                .into_any_element(),
+
+            Some(display_node_kind::Kind::InteractiveText(text)) => el
+                .child(SharedString::from(text.content.clone()))
+                .into_any_element(),
+
+            Some(display_node_kind::Kind::UniformList(_))
+            | Some(display_node_kind::Kind::List(_))
+            | Some(display_node_kind::Kind::Anchored(_)) => {
+                let children: Vec<AnyElement> = node
+                    .children
+                    .iter()
+                    .map(|child| self.render_node(child))
+                    .collect();
+                el.children(children).into_any_element()
+            }
+
+            Some(display_node_kind::Kind::Svg(_))
+            | Some(display_node_kind::Kind::Image(_))
+            | Some(display_node_kind::Kind::Canvas(_))
+            | None => el.into_any_element(),
+        }
+    }
+}
+
+/// Apply visual styles from a DisplayNode to a div element.
+fn apply_visual_style(mut el: Div, node: &DisplayNode) -> Div {
+    let Some(style) = &node.style else {
+        return el;
+    };
+
+    if let Some(visual) = &style.visual {
+        if let Some(bg) = &visual.background {
             el = el.bg(to_rgba(bg));
         }
 
-        if let Some(bc) = &node.style.visual.border_color {
+        if let Some(bc) = &visual.border_color {
             el = el.border_color(to_rgba(bc));
         }
-        if let Some([top, right, bottom, left]) = node.style.visual.border_widths {
+        if visual.border_widths.len() >= 4 {
+            let top = visual.border_widths[0];
+            let right = visual.border_widths[1];
+            let bottom = visual.border_widths[2];
+            let left = visual.border_widths[3];
             if top > 0.0 || right > 0.0 || bottom > 0.0 || left > 0.0 {
                 el = el.border_1();
             }
         }
 
-        if let Some([tl, ..]) = node.style.visual.corner_radii {
-            if tl > 0.0 {
-                el = el.rounded(px(tl));
-            }
+        if !visual.corner_radii.is_empty() && visual.corner_radii[0] > 0.0 {
+            el = el.rounded(px(visual.corner_radii[0]));
         }
 
-        if let Some(opacity) = node.style.visual.opacity {
+        if let Some(opacity) = visual.opacity {
             el = el.opacity(opacity);
         }
 
-        if let Some(text) = &node.style.text {
-            if let Some(color) = &text.color {
-                el = el.text_color(to_rgba(color));
-            }
-            if let Some(size) = text.font_size {
-                el = el.text_size(px(size));
-            }
-        }
-
-        if !node.style.visual.visible {
+        if !visual.visible {
             el = el.invisible();
         }
+    }
 
-        match &node.kind {
-            DisplayNodeKind::Container { .. } => {
-                let children: Vec<AnyElement> = node
-                    .children
-                    .iter()
-                    .map(|child| self.render_node(child))
-                    .collect();
-                el.children(children).into_any_element()
-            }
-
-            DisplayNodeKind::Text { content, .. }
-            | DisplayNodeKind::InteractiveText { content, .. } => {
-                el.child(SharedString::from(content.clone()))
-                    .into_any_element()
-            }
-
-            DisplayNodeKind::UniformList { .. }
-            | DisplayNodeKind::List { .. }
-            | DisplayNodeKind::Anchored { .. } => {
-                let children: Vec<AnyElement> = node
-                    .children
-                    .iter()
-                    .map(|child| self.render_node(child))
-                    .collect();
-                el.children(children).into_any_element()
-            }
-
-            DisplayNodeKind::Svg { .. }
-            | DisplayNodeKind::Image { .. }
-            | DisplayNodeKind::Canvas { .. } => el.into_any_element(),
+    if let Some(text) = &style.text {
+        if let Some(color) = &text.color {
+            el = el.text_color(to_rgba(color));
+        }
+        if let Some(size) = text.font_size {
+            el = el.text_size(px(size));
         }
     }
+
+    el
 }
 
 impl Render for RemoteView {
@@ -175,7 +220,11 @@ impl Render for RemoteView {
         let root = div().relative().size_full();
 
         if let Some(tree) = &self.tree {
-            root.child(self.render_node(&tree.root))
+            if let Some(root_node) = &tree.root {
+                root.child(self.render_node(root_node))
+            } else {
+                root
+            }
         } else {
             root.child(
                 div()

@@ -1,9 +1,10 @@
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 mod connection;
 mod remote_view;
 
-use connection::Connection;
+pub use connection::Connection;
 use remote_view::RemoteView;
 
 use gpui::display_tree::WireFrame;
@@ -37,9 +38,30 @@ pub fn launch(ws_url: &str) -> Result<(), JsValue> {
         let (frame_tx, mut frame_rx) = futures::channel::mpsc::unbounded::<WireFrame>();
 
         let connection = Rc::new(
-            Connection::connect(&url, frame_tx)
-                .expect("failed to connect WebSocket"),
+            Connection::connect(&url, frame_tx).expect("failed to connect WebSocket"),
         );
+
+        // Send initial viewport size to server.
+        if let Some(browser_window) = web_sys::window() {
+            let width = browser_window
+                .inner_width()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1280.0) as f32;
+            let height = browser_window
+                .inner_height()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(720.0) as f32;
+            let scale = browser_window.device_pixel_ratio() as f32;
+            connection
+                .send_viewport_changed(width, height, scale)
+                .ok();
+        }
+
+        // Listen for browser resize events and forward to server.
+        setup_resize_listener(&connection);
+        setup_keyboard_listener(&connection);
 
         let conn = connection.clone();
         let window = cx
@@ -64,4 +86,74 @@ pub fn launch(ws_url: &str) -> Result<(), JsValue> {
     });
 
     Ok(())
+}
+
+/// Attach a `resize` event listener on the browser window that forwards
+/// viewport size changes to the streaming server.
+fn setup_resize_listener(connection: &Rc<Connection>) {
+    let conn = connection.clone();
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+        if let Some(browser_window) = web_sys::window() {
+            let width = browser_window
+                .inner_width()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1280.0) as f32;
+            let height = browser_window
+                .inner_height()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(720.0) as f32;
+            let scale = browser_window.device_pixel_ratio() as f32;
+            conn.send_viewport_changed(width, height, scale).ok();
+        }
+    });
+    if let Some(browser_window) = web_sys::window() {
+        browser_window
+            .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref())
+            .ok();
+    }
+    // Prevent the closure from being dropped (which would deregister the listener).
+    closure.forget();
+}
+
+/// Attach keyboard event listeners on the document that forward key events
+/// to the streaming server. These are global listeners — the server decides
+/// which element receives focus.
+fn setup_keyboard_listener(connection: &Rc<Connection>) {
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        // keydown
+        {
+            let conn = connection.clone();
+            let closure =
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                    if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
+                        let modifiers =
+                            connection::modifiers_from_keyboard_event(&keyboard_event);
+                        conn.send_key_down(keyboard_event.key(), modifiers).ok();
+                    }
+                });
+            document
+                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
+                .ok();
+            closure.forget();
+        }
+
+        // keyup
+        {
+            let conn = connection.clone();
+            let closure =
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                    if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
+                        let modifiers =
+                            connection::modifiers_from_keyboard_event(&keyboard_event);
+                        conn.send_key_up(keyboard_event.key(), modifiers).ok();
+                    }
+                });
+            document
+                .add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref())
+                .ok();
+            closure.forget();
+        }
+    }
 }

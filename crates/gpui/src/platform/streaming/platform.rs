@@ -36,6 +36,7 @@ pub(crate) struct StreamingPlatformState {
     active_window: Option<AnyWindowHandle>,
     frame_tx: smol::channel::Sender<DisplayTree>,
     resize_rx: smol::channel::Receiver<(f32, f32, f32)>,
+    input_rx: smol::channel::Receiver<crate::PlatformInput>,
     config: StreamingConfig,
     windows: Vec<StreamingWindow>,
 }
@@ -47,6 +48,11 @@ pub struct StreamingPlatform {
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
     state: Mutex<StreamingPlatformState>,
+    #[cfg(all(
+        any(target_os = "linux", target_os = "freebsd"),
+        not(target_os = "macos")
+    ))]
+    streaming_dispatcher: Arc<StreamingDispatcher>,
 }
 
 impl StreamingPlatform {
@@ -54,6 +60,7 @@ impl StreamingPlatform {
         config: StreamingConfig,
         frame_tx: smol::channel::Sender<DisplayTree>,
         resize_rx: smol::channel::Receiver<(f32, f32, f32)>,
+        input_rx: smol::channel::Receiver<crate::PlatformInput>,
     ) -> Rc<Self> {
         #[cfg(target_os = "macos")]
         let dispatcher: Arc<dyn crate::PlatformDispatcher> =
@@ -63,8 +70,12 @@ impl StreamingPlatform {
             any(target_os = "linux", target_os = "freebsd"),
             not(target_os = "macos")
         ))]
-        let dispatcher: Arc<dyn crate::PlatformDispatcher> =
-            Arc::new(StreamingDispatcher::new());
+        let streaming_dispatcher = Arc::new(StreamingDispatcher::new());
+        #[cfg(all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(target_os = "macos")
+        ))]
+        let dispatcher: Arc<dyn crate::PlatformDispatcher> = streaming_dispatcher.clone();
 
         #[cfg(target_os = "macos")]
         let text_system: Arc<dyn PlatformTextSystem> =
@@ -84,9 +95,15 @@ impl StreamingPlatform {
                 active_window: None,
                 frame_tx,
                 resize_rx,
+                input_rx,
                 config,
                 windows: Vec::new(),
             }),
+            #[cfg(all(
+                any(target_os = "linux", target_os = "freebsd"),
+                not(target_os = "macos")
+            ))]
+            streaming_dispatcher,
         })
     }
 }
@@ -124,9 +141,15 @@ impl Platform for StreamingPlatform {
                 let state = unsafe { &*(info as *const Mutex<StreamingPlatformState>) };
                 let windows: Vec<StreamingWindow> = state.lock().windows.clone();
                 let resize_rx = state.lock().resize_rx.clone();
+                let input_rx = state.lock().input_rx.clone();
                 while let Ok((w, h, _s)) = resize_rx.try_recv() {
                     for window in &windows {
                         window.simulate_resize(w, h);
+                    }
+                }
+                while let Ok(event) = input_rx.try_recv() {
+                    for window in &windows {
+                        window.simulate_input(event.clone());
                     }
                 }
                 for window in &windows {
@@ -160,10 +183,35 @@ impl Platform for StreamingPlatform {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            // On non-macOS, park the thread indefinitely. The foreground
-            // executor uses a polling dispatcher that doesn't require a
-            // run loop, so parking is sufficient to keep the process alive.
-            std::thread::park();
+            let dispatcher = self.streaming_dispatcher.clone();
+            let state_ptr = &self.state as *const Mutex<StreamingPlatformState>;
+            let interval = std::time::Duration::from_micros(8333); // ~120fps
+
+            loop {
+                dispatcher.drain_main_queue();
+
+                let state = unsafe { &*state_ptr };
+                let windows: Vec<StreamingWindow> = state.lock().windows.clone();
+                let resize_rx = state.lock().resize_rx.clone();
+                let input_rx = state.lock().input_rx.clone();
+                while let Ok((w, h, _s)) = resize_rx.try_recv() {
+                    for window in &windows {
+                        window.simulate_resize(w, h);
+                    }
+                }
+                while let Ok(event) = input_rx.try_recv() {
+                    for window in &windows {
+                        window.simulate_input(event.clone());
+                    }
+                }
+                for window in &windows {
+                    window.request_frame();
+                }
+
+                dispatcher.drain_main_queue();
+
+                std::thread::sleep(interval);
+            }
         }
     }
 
@@ -408,8 +456,10 @@ impl crate::PlatformKeyboardLayout for StreamingKeyboardLayout {
     any(target_os = "linux", target_os = "freebsd"),
     not(target_os = "macos")
 ))]
-struct StreamingDispatcher {
+pub(crate) struct StreamingDispatcher {
     main_thread_id: std::thread::ThreadId,
+    main_sender: smol::channel::Sender<crate::RunnableVariant>,
+    main_receiver: smol::channel::Receiver<crate::RunnableVariant>,
 }
 
 #[cfg(all(
@@ -418,8 +468,18 @@ struct StreamingDispatcher {
 ))]
 impl StreamingDispatcher {
     fn new() -> Self {
+        let (main_sender, main_receiver) = smol::channel::unbounded();
         Self {
             main_thread_id: std::thread::current().id(),
+            main_sender,
+            main_receiver,
+        }
+    }
+
+    /// Drain all queued main-thread runnables. Called from the run loop.
+    pub(crate) fn drain_main_queue(&self) {
+        while let Ok(runnable) = self.main_receiver.try_recv() {
+            runnable.run();
         }
     }
 }
@@ -450,16 +510,15 @@ impl crate::PlatformDispatcher for StreamingDispatcher {
         runnable: crate::RunnableVariant,
         _priority: crate::Priority,
     ) {
-        // In streaming mode without a run loop, run immediately.
-        runnable.run();
+        self.main_sender.try_send(runnable).ok();
     }
 
     fn dispatch_after(&self, duration: std::time::Duration, runnable: crate::RunnableVariant) {
-        smol::spawn(async move {
-            smol::Timer::after(duration).await;
-            runnable.run();
-        })
-        .detach();
+        let sender = self.main_sender.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(duration);
+            sender.try_send(runnable).ok();
+        });
     }
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {

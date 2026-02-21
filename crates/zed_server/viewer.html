@@ -257,7 +257,11 @@
     let lastTime = performance.now();
     let lastTree = null;
 
-    const ws = new WebSocket('ws://127.0.0.1:8080');
+    // Auto-detect WebSocket URL: use wss:// for https:// origins, ws:// for http://
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = new URLSearchParams(location.search).get('ws')
+      || `${wsProtocol}//${location.host}`;
+    const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
@@ -338,6 +342,118 @@
         sendViewport();
       }, 150);
     });
+
+    // --- Input event forwarding ---
+    // Send input events to the server as JSON messages so GPUI can dispatch them.
+
+    function sendInput(msg) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify(msg));
+    }
+
+    function getModifiers(e) {
+      return {
+        control: e.ctrlKey || false,
+        alt: e.altKey || false,
+        shift: e.shiftKey || false,
+        platform: e.metaKey || false,
+        function: false,
+      };
+    }
+
+    function mouseButton(b) {
+      switch (b) {
+        case 0: return 'Left';
+        case 1: return 'Middle';
+        case 2: return 'Right';
+        default: return 'Left';
+      }
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      canvas.focus();
+      sendInput({ MouseDown: {
+        button: mouseButton(e.button),
+        position: { x: e.offsetX, y: e.offsetY },
+        modifiers: getModifiers(e),
+        click_count: e.detail || 1,
+        first_mouse: false,
+      }});
+    });
+
+    canvas.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      sendInput({ MouseUp: {
+        button: mouseButton(e.button),
+        position: { x: e.offsetX, y: e.offsetY },
+        modifiers: getModifiers(e),
+        click_count: e.detail || 1,
+      }});
+    });
+
+    // Throttle mousemove to avoid flooding the server.
+    let lastMoveTime = 0;
+    canvas.addEventListener('mousemove', (e) => {
+      const now = performance.now();
+      if (now - lastMoveTime < 16) return; // ~60fps cap
+      lastMoveTime = now;
+      const pressed = e.buttons & 1 ? 'Left' : e.buttons & 2 ? 'Right' : e.buttons & 4 ? 'Middle' : null;
+      sendInput({ MouseMove: {
+        position: { x: e.offsetX, y: e.offsetY },
+        pressed_button: pressed,
+        modifiers: getModifiers(e),
+      }});
+    });
+
+    canvas.addEventListener('mouseleave', (e) => {
+      sendInput({ MouseExited: {
+        position: { x: e.offsetX, y: e.offsetY },
+        pressed_button: null,
+        modifiers: getModifiers(e),
+      }});
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      sendInput({ ScrollWheel: {
+        position: { x: e.offsetX, y: e.offsetY },
+        delta_x: -e.deltaX,
+        delta_y: -e.deltaY,
+        modifiers: getModifiers(e),
+        precise: e.deltaMode === 0,
+      }});
+    }, { passive: false });
+
+    // Make canvas focusable for keyboard events.
+    canvas.setAttribute('tabindex', '0');
+    canvas.style.outline = 'none';
+
+    canvas.addEventListener('keydown', (e) => {
+      e.preventDefault();
+      sendInput({ KeyDown: {
+        key: e.key,
+        code: e.code,
+        modifiers: getModifiers(e),
+        is_held: e.repeat,
+        key_char: e.key.length === 1 ? e.key : null,
+      }});
+    });
+
+    canvas.addEventListener('keyup', (e) => {
+      e.preventDefault();
+      sendInput({ KeyUp: {
+        key: e.key,
+        code: e.code,
+        modifiers: getModifiers(e),
+      }});
+    });
+
+    // Prevent context menu on right-click.
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // Focus the canvas on load so keyboard events work immediately.
+    canvas.focus();
   </script>
 </body>
 </html>

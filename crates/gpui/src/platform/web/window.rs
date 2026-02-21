@@ -125,21 +125,165 @@ impl WebWindow {
         state: &Rc<RefCell<WebWindowState>>,
         closures: &Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>,
     ) {
-        // Mouse move
+        // Make the canvas focusable so it can receive keyboard events.
+        canvas.set_tab_index(0);
+
+        // Mouse move → dispatch as PlatformInput::MouseMove
         {
             let state = state.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
-                    let mut s = state.borrow_mut();
-                    s.mouse_position = Point {
+                    let position = Point {
                         x: px(mouse_event.offset_x() as f32),
                         y: px(mouse_event.offset_y() as f32),
                     };
+                    let mut s = state.borrow_mut();
+                    s.mouse_position = position;
                     s.is_hovered = true;
+                    let modifiers = web_modifiers(&mouse_event);
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::MouseMove(crate::MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers,
+                        }));
+                    }
                 }
             });
             canvas
                 .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        // Mouse down → dispatch as PlatformInput::MouseDown
+        {
+            let state = state.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let position = Point {
+                        x: px(mouse_event.offset_x() as f32),
+                        y: px(mouse_event.offset_y() as f32),
+                    };
+                    let modifiers = web_modifiers(&mouse_event);
+                    let button = web_mouse_button(mouse_event.button());
+                    let mut s = state.borrow_mut();
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::MouseDown(crate::MouseDownEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                            first_mouse: false,
+                        }));
+                    }
+                }
+            });
+            canvas
+                .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        // Mouse up → dispatch as PlatformInput::MouseUp
+        {
+            let state = state.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let position = Point {
+                        x: px(mouse_event.offset_x() as f32),
+                        y: px(mouse_event.offset_y() as f32),
+                    };
+                    let modifiers = web_modifiers(&mouse_event);
+                    let button = web_mouse_button(mouse_event.button());
+                    let mut s = state.borrow_mut();
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::MouseUp(crate::MouseUpEvent {
+                            button,
+                            position,
+                            modifiers,
+                            click_count: 1,
+                        }));
+                    }
+                }
+            });
+            canvas
+                .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        // Scroll wheel → dispatch as PlatformInput::ScrollWheel
+        {
+            let state = state.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                event.prevent_default();
+                if let Ok(wheel_event) = event.dyn_into::<web_sys::WheelEvent>() {
+                    let mouse_event: &web_sys::MouseEvent = wheel_event.as_ref();
+                    let position = Point {
+                        x: px(mouse_event.offset_x() as f32),
+                        y: px(mouse_event.offset_y() as f32),
+                    };
+                    let modifiers = web_modifiers(mouse_event);
+                    let delta = crate::ScrollDelta::Pixels(Point {
+                        x: px(-wheel_event.delta_x() as f32),
+                        y: px(-wheel_event.delta_y() as f32),
+                    });
+                    let mut s = state.borrow_mut();
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                            position,
+                            delta,
+                            modifiers,
+                            touch_phase: crate::TouchPhase::Moved,
+                        }));
+                    }
+                }
+            });
+            canvas
+                .add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        // Keyboard down → dispatch as PlatformInput::KeyDown
+        {
+            let state = state.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
+                    // Prevent browser default for most keys to avoid scrolling, etc.
+                    keyboard_event.prevent_default();
+                    let keystroke = web_keystroke(&keyboard_event);
+                    let mut s = state.borrow_mut();
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::KeyDown(crate::KeyDownEvent {
+                            keystroke,
+                            is_held: keyboard_event.repeat(),
+                            prefer_character_input: false,
+                        }));
+                    }
+                }
+            });
+            canvas
+                .add_event_listener_with_callback("keydown", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        // Keyboard up → dispatch as PlatformInput::KeyUp
+        {
+            let state = state.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
+                    let keystroke = web_keystroke(&keyboard_event);
+                    let mut s = state.borrow_mut();
+                    if let Some(ref mut input_cb) = s.callbacks.input {
+                        input_cb(PlatformInput::KeyUp(crate::KeyUpEvent { keystroke }));
+                    }
+                }
+            });
+            canvas
+                .add_event_listener_with_callback("keyup", closure.as_ref().unchecked_ref())
                 .ok();
             closures.borrow_mut().push(closure);
         }
@@ -420,6 +564,80 @@ impl PlatformWindow for WebWindow {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
+    }
+}
+
+/// Convert browser mouse event modifiers to GPUI Modifiers.
+fn web_modifiers(event: &web_sys::MouseEvent) -> crate::Modifiers {
+    crate::Modifiers {
+        control: event.ctrl_key(),
+        alt: event.alt_key(),
+        shift: event.shift_key(),
+        platform: event.meta_key(),
+        function: false,
+    }
+}
+
+/// Convert browser mouse button index to GPUI MouseButton.
+fn web_mouse_button(button: i16) -> crate::MouseButton {
+    match button {
+        0 => crate::MouseButton::Left,
+        1 => crate::MouseButton::Middle,
+        2 => crate::MouseButton::Right,
+        3 => crate::MouseButton::Navigate(crate::NavigationDirection::Back),
+        4 => crate::MouseButton::Navigate(crate::NavigationDirection::Forward),
+        _ => crate::MouseButton::Left,
+    }
+}
+
+/// Convert a browser KeyboardEvent to a GPUI Keystroke.
+fn web_keystroke(event: &web_sys::KeyboardEvent) -> crate::Keystroke {
+    let key = match event.key().as_str() {
+        "ArrowUp" => "up".to_string(),
+        "ArrowDown" => "down".to_string(),
+        "ArrowLeft" => "left".to_string(),
+        "ArrowRight" => "right".to_string(),
+        "Backspace" => "backspace".to_string(),
+        "Delete" => "delete".to_string(),
+        "Enter" => "enter".to_string(),
+        "Escape" => "escape".to_string(),
+        "Tab" => "tab".to_string(),
+        " " => "space".to_string(),
+        "Home" => "home".to_string(),
+        "End" => "end".to_string(),
+        "PageUp" => "pageup".to_string(),
+        "PageDown" => "pagedown".to_string(),
+        "F1" => "f1".to_string(),
+        "F2" => "f2".to_string(),
+        "F3" => "f3".to_string(),
+        "F4" => "f4".to_string(),
+        "F5" => "f5".to_string(),
+        "F6" => "f6".to_string(),
+        "F7" => "f7".to_string(),
+        "F8" => "f8".to_string(),
+        "F9" => "f9".to_string(),
+        "F10" => "f10".to_string(),
+        "F11" => "f11".to_string(),
+        "F12" => "f12".to_string(),
+        other => other.to_lowercase(),
+    };
+
+    let key_char = if key.len() == 1 {
+        Some(event.key())
+    } else {
+        None
+    };
+
+    crate::Keystroke {
+        modifiers: crate::Modifiers {
+            control: event.ctrl_key(),
+            alt: event.alt_key(),
+            shift: event.shift_key(),
+            platform: event.meta_key(),
+            function: false,
+        },
+        key,
+        key_char,
     }
 }
 
