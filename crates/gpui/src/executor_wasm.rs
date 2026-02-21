@@ -11,8 +11,9 @@ use std::{
     rc::Rc,
     sync::Arc,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+use crate::time_compat::Instant;
 
 pub use crate::wasm_shims::Priority;
 

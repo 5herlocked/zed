@@ -48,8 +48,9 @@ use std::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+use crate::time_compat::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use util::post_inc;
 #[cfg(not(target_arch = "wasm32"))]

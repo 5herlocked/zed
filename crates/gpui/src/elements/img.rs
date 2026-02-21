@@ -19,8 +19,9 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+use crate::time_compat::Instant;
 use thiserror::Error;
 #[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;

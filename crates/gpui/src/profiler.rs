@@ -4,8 +4,8 @@ use std::{
     hash::{DefaultHasher, Hash},
     sync::Arc,
     thread::ThreadId,
-    time::Instant,
 };
+use crate::time_compat::Instant;
 
 use serde::{Deserialize, Serialize};
 

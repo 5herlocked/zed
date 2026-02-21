@@ -30,6 +30,17 @@ pub(crate) use platform_scheduler::PlatformScheduler;
 #[cfg(target_arch = "wasm32")]
 #[macro_use]
 mod wasm_shims;
+
+/// Cross-platform time types. Uses `web_time` on wasm32 (where `std::time::Instant`
+/// panics) and `std::time` on native.
+pub(crate) mod time_compat {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use std::time::Instant;
+
+    #[cfg(target_arch = "wasm32")]
+    pub use web_time::Instant;
+}
+
 mod geometry;
 mod global;
 mod input;

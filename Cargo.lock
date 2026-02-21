@@ -7467,6 +7467,7 @@ dependencies = [
  "wayland-protocols-plasma",
  "wayland-protocols-wlr",
  "web-sys",
+ "web-time",
  "wgpu",
  "windows 0.61.3",
  "windows-core 0.61.2",

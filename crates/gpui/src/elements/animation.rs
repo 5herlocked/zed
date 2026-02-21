@@ -1,7 +1,8 @@
 use std::{
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
+use crate::time_compat::Instant;
 
 use crate::{
     AnyElement, App, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, Window,
