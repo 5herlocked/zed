@@ -33,10 +33,16 @@ pub fn launch(ws_url: &str) -> Result<(), JsValue> {
 
     let url = ws_url.to_string();
 
+    log::info!("zed_web: creating Application");
     let app = Application::new();
+
+    log::info!("zed_web: calling app.run()");
     app.run(move |cx| {
+        log::info!("zed_web: inside app.run callback");
+
         let (frame_tx, mut frame_rx) = futures::channel::mpsc::unbounded::<WireFrame>();
 
+        log::info!("zed_web: connecting WebSocket to {}", url);
         let connection = Rc::new(
             Connection::connect(&url, frame_tx).expect("failed to connect WebSocket"),
         );
@@ -59,17 +65,19 @@ pub fn launch(ws_url: &str) -> Result<(), JsValue> {
                 .ok();
         }
 
-        // Listen for browser resize events and forward to server.
         setup_resize_listener(&connection);
         setup_keyboard_listener(&connection);
 
+        log::info!("zed_web: opening GPUI window");
         let conn = connection.clone();
         let window = cx
             .open_window(WindowOptions::default(), |_window, cx| {
+                log::info!("zed_web: building root view");
                 cx.new(|_cx| RemoteView::new(conn))
             })
             .expect("failed to open window");
 
+        log::info!("zed_web: window opened, spawning frame loop");
         cx.spawn(async move |cx| {
             while let Some(frame) = frame_rx.next().await {
                 window

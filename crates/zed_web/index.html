@@ -24,6 +24,17 @@
 
         async function run() {
             try {
+                if (typeof SharedArrayBuffer === 'undefined') {
+                    status.textContent = 'error: SharedArrayBuffer not available — serve with COOP/COEP headers (use serve.py)';
+                    status.className = 'error';
+                    console.error(
+                        'SharedArrayBuffer is required for WASM atomics.\n' +
+                        'Use: python3 serve.py 3000\n' +
+                        'This adds Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy headers.'
+                    );
+                    return;
+                }
+
                 status.textContent = 'initializing...';
                 await init();
 
