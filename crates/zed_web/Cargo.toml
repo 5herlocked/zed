@@ -30,6 +30,7 @@ web-sys = { version = "0.3", features = [
     "BinaryType",
     "Blob",
     "CloseEvent",
+    "console",
     "Document",
     "Element",
     "ErrorEvent",
