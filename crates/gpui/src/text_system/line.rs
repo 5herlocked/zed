@@ -87,6 +87,27 @@ impl ShapedLine {
                 builder.push_shaped_text(self.text.to_string(), bounds, runs);
             }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let color = self
+                .decoration_runs
+                .first()
+                .map(|r| r.color)
+                .unwrap_or(crate::black());
+            let font_size_f32: f32 = self.layout.font_size.into();
+            window.push_text_draw(crate::TextDraw {
+                text: self.text.to_string(),
+                origin_x: origin.x.into(),
+                origin_y: origin.y.into(),
+                font_size: font_size_f32,
+                color,
+                font_family: String::new(),
+                font_weight: 400,
+                font_style_italic: false,
+            });
+        }
+
         paint_line(
             origin,
             &self.layout,
@@ -178,6 +199,27 @@ impl WrappedLine {
                 builder.push_shaped_text(self.text.to_string(), bounds, runs);
             }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let color = self
+                .decoration_runs
+                .first()
+                .map(|r| r.color)
+                .unwrap_or(crate::black());
+            let font_size_f32: f32 = self.layout.unwrapped_layout.font_size.into();
+            window.push_text_draw(crate::TextDraw {
+                text: self.text.to_string(),
+                origin_x: origin.x.into(),
+                origin_y: origin.y.into(),
+                font_size: font_size_f32,
+                color,
+                font_family: String::new(),
+                font_weight: 400,
+                font_style_italic: false,
+            });
+        }
+
         paint_line(
             origin,
             &self.layout.unwrapped_layout,

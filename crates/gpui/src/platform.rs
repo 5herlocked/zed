@@ -557,6 +557,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 
+    /// Push a text draw command for Canvas2D rendering. Only used on wasm32.
+    #[cfg(target_arch = "wasm32")]
+    fn push_text_draw(&self, _draw: crate::TextDraw) {}
+
     /// Drive a single frame request, invoking the registered request_frame
     /// callback. On native platforms the DisplayLink handles this; on
     /// StreamingWindow the caller must drive frames explicitly.

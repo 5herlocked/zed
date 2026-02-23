@@ -29,6 +29,19 @@ struct WebWindowCallbacks {
     appearance_changed: Option<Box<dyn FnMut()>>,
 }
 
+/// A text draw command captured during the paint phase for Canvas2D rendering.
+#[derive(Clone)]
+pub(crate) struct TextDraw {
+    pub text: String,
+    pub origin_x: f32,
+    pub origin_y: f32,
+    pub font_size: f32,
+    pub color: crate::Hsla,
+    pub font_family: String,
+    pub font_weight: u16,
+    pub font_style_italic: bool,
+}
+
 struct WebWindowState {
     bounds: Bounds<Pixels>,
     scale_factor: f32,
@@ -39,6 +52,7 @@ struct WebWindowState {
     input_handler: Option<PlatformInputHandler>,
     canvas: Option<web_sys::HtmlCanvasElement>,
     raf_handle: Option<i32>,
+    pending_text_draws: Vec<TextDraw>,
 }
 
 pub(crate) struct WebWindow {
@@ -81,6 +95,7 @@ impl WebWindow {
             input_handler: None,
             canvas: canvas.clone(),
             raf_handle: None,
+            pending_text_draws: Vec::new(),
         }));
 
         let event_closures = Rc::new(RefCell::new(Vec::new()));
@@ -537,19 +552,76 @@ impl PlatformWindow for WebWindow {
         self.state.borrow_mut().callbacks.appearance_changed = Some(callback);
     }
 
-    fn draw(&self, _scene: &Scene) {
-        // Scene rendering to Canvas2D will be implemented as part of the
-        // browser-side hydration layer. For now, clear the canvas each frame.
-        let state = self.state.borrow();
-        if let Some(ref canvas) = state.canvas {
-            if let Ok(Some(ctx)) = canvas.get_context("2d") {
-                if let Ok(ctx) = ctx.dyn_into::<web_sys::CanvasRenderingContext2d>() {
-                    let width = canvas.width() as f64;
-                    let height = canvas.height() as f64;
-                    ctx.clear_rect(0.0, 0.0, width, height);
+    fn draw(&self, scene: &Scene) {
+        let mut state = self.state.borrow_mut();
+        let Some(ref canvas) = state.canvas else {
+            return;
+        };
+        let Ok(Some(ctx)) = canvas.get_context("2d") else {
+            return;
+        };
+        let Ok(ctx) = ctx.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
+            return;
+        };
+
+        let width = canvas.width() as f64;
+        let height = canvas.height() as f64;
+        ctx.clear_rect(0.0, 0.0, width, height);
+
+        let scale = state.scale_factor as f64;
+
+        // Walk paint_operations in order to respect layering.
+        for operation in &scene.paint_operations {
+            match operation {
+                crate::scene::PaintOperation::StartLayer(clip) => {
+                    ctx.save();
+                    let x: f64 = clip.origin.x.into();
+                    let y: f64 = clip.origin.y.into();
+                    let w: f64 = clip.size.width.into();
+                    let h: f64 = clip.size.height.into();
+                    ctx.begin_path();
+                    ctx.rect(x, y, w, h);
+                    ctx.clip();
+                }
+                crate::scene::PaintOperation::EndLayer => {
+                    ctx.restore();
+                }
+                crate::scene::PaintOperation::Primitive(primitive) => {
+                    paint_primitive(&ctx, primitive, scale);
                 }
             }
         }
+
+        // Render text draws collected during the paint phase.
+        for text_draw in state.pending_text_draws.drain(..) {
+            let color = hsla_to_css_string(text_draw.color);
+            let font_size = text_draw.font_size * scale as f32;
+            let weight = text_draw.font_weight;
+            let style = if text_draw.font_style_italic {
+                "italic"
+            } else {
+                "normal"
+            };
+            let family = if text_draw.font_family.is_empty() {
+                "sans-serif"
+            } else {
+                &text_draw.font_family
+            };
+            let font = format!("{style} {weight} {font_size}px {family}");
+            ctx.set_font(&font);
+            ctx.set_fill_style_str(&color);
+            ctx.set_text_baseline("top");
+            ctx.fill_text(
+                &text_draw.text,
+                text_draw.origin_x as f64 * scale,
+                text_draw.origin_y as f64 * scale,
+            )
+            .ok();
+        }
+    }
+
+    fn push_text_draw(&self, draw: TextDraw) {
+        self.state.borrow_mut().pending_text_draws.push(draw);
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -565,6 +637,121 @@ impl PlatformWindow for WebWindow {
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
     }
+}
+
+fn paint_primitive(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    primitive: &crate::scene::Primitive,
+    _scale: f64,
+) {
+    match primitive {
+        crate::scene::Primitive::Quad(quad) => {
+            let x: f64 = quad.bounds.origin.x.into();
+            let y: f64 = quad.bounds.origin.y.into();
+            let w: f64 = quad.bounds.size.width.into();
+            let h: f64 = quad.bounds.size.height.into();
+
+            let bg_rgba: crate::Rgba = quad.background.solid.into();
+            if bg_rgba.a > 0.001 {
+                let color = hsla_to_css_string(quad.background.solid);
+                ctx.set_fill_style_str(&color);
+
+                let tl: f64 = quad.corner_radii.top_left.into();
+                if tl > 0.0 {
+                    rounded_rect(ctx, x, y, w, h, tl);
+                    ctx.fill();
+                } else {
+                    ctx.fill_rect(x, y, w, h);
+                }
+            }
+
+            // Border
+            let border_top: f64 = quad.border_widths.top.into();
+            let border_rgba: crate::Rgba = quad.border_color.into();
+            if border_top > 0.0 && border_rgba.a > 0.001 {
+                let border_css = hsla_to_css_string(quad.border_color);
+                ctx.set_stroke_style_str(&border_css);
+                ctx.set_line_width(border_top);
+                let tl: f64 = quad.corner_radii.top_left.into();
+                if tl > 0.0 {
+                    rounded_rect(ctx, x, y, w, h, tl);
+                    ctx.stroke();
+                } else {
+                    ctx.stroke_rect(x, y, w, h);
+                }
+            }
+        }
+        crate::scene::Primitive::Shadow(shadow) => {
+            let x: f64 = shadow.bounds.origin.x.into();
+            let y: f64 = shadow.bounds.origin.y.into();
+            let w: f64 = shadow.bounds.size.width.into();
+            let h: f64 = shadow.bounds.size.height.into();
+            let blur: f64 = shadow.blur_radius.into();
+            let color = hsla_to_css_string(shadow.color);
+
+            ctx.save();
+            ctx.set_shadow_blur(blur);
+            ctx.set_shadow_color(&color);
+            ctx.set_fill_style_str("rgba(0,0,0,0)");
+            ctx.fill_rect(x, y, w, h);
+            ctx.restore();
+        }
+        crate::scene::Primitive::Underline(underline) => {
+            let x: f64 = underline.bounds.origin.x.into();
+            let y: f64 = underline.bounds.origin.y.into();
+            let w: f64 = underline.bounds.size.width.into();
+            let thickness: f64 = underline.thickness.into();
+            let color = hsla_to_css_string(underline.color);
+
+            ctx.set_stroke_style_str(&color);
+            ctx.set_line_width(thickness);
+            ctx.begin_path();
+            ctx.move_to(x, y);
+            ctx.line_to(x + w, y);
+            ctx.stroke();
+        }
+        // Sprites (text glyphs) — we can't easily render these from atlas tiles
+        // in Canvas2D. For now, skip them. Text will be rendered when we add
+        // a DOM overlay or Canvas2D text path.
+        crate::scene::Primitive::MonochromeSprite(_)
+        | crate::scene::Primitive::SubpixelSprite(_)
+        | crate::scene::Primitive::PolychromeSprite(_)
+        | crate::scene::Primitive::Path(_)
+        | crate::scene::Primitive::Surface(_) => {}
+    }
+}
+
+fn hsla_to_css_string(hsla: crate::Hsla) -> String {
+    let rgba: crate::Rgba = hsla.into();
+    format!(
+        "rgba({},{},{},{})",
+        (rgba.r * 255.0) as u8,
+        (rgba.g * 255.0) as u8,
+        (rgba.b * 255.0) as u8,
+        rgba.a,
+    )
+}
+
+fn rounded_rect(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    radius: f64,
+) {
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    ctx.begin_path();
+    ctx.move_to(x + r, y);
+    ctx.line_to(x + w - r, y);
+    ctx.arc_to(x + w, y, x + w, y + r, r).ok();
+    ctx.line_to(x + w, y + h - r);
+    ctx.arc_to(x + w, y + h, x + w - r, y + h, r).ok();
+    ctx.line_to(x + r, y + h);
+    ctx.arc_to(x, y + h, x, y + h - r, r).ok();
+    ctx.line_to(x, y + r);
+    ctx.arc_to(x, y, x + r, y, r).ok();
+    ctx.close_path();
 }
 
 /// Convert browser mouse event modifiers to GPUI Modifiers.

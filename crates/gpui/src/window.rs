@@ -3245,6 +3245,13 @@ impl Window {
     /// This method is only useful if you need to paint a single glyph that has already been shaped.
     ///
     /// This method should only be called as part of the paint phase of element drawing.
+    /// Push a text draw command for Canvas2D rendering on the web platform.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn push_text_draw(&self, draw: crate::TextDraw) {
+        self.platform_window.push_text_draw(draw);
+    }
+
+    /// Paint a single glyph to the window's scene.
     pub fn paint_glyph(
         &mut self,
         origin: Point<Pixels>,
