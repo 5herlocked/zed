@@ -4,7 +4,7 @@ use clap::Parser;
 use futures::stream::StreamExt;
 use futures::{SinkExt, TryStreamExt};
 use git::GitHostingProviderRegistry;
-use gpui::{AppContext as _, display_tree::DisplayTree};
+use gpui::{AppContext as _, display_tree::{DisplayTree, WireFrame, wire_frame}};
 use gpui::{Application, StreamingConfig};
 use language::LanguageRegistry;
 use log::{error, info};
@@ -147,8 +147,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Reads DisplayTree frames from GPUI's smol channel and publishes
-/// the latest protobuf-encoded bytes to the watch channel.
+/// Reads DisplayTree frames from GPUI's smol channel, wraps each in a
+/// WireFrame::Snapshot envelope, and publishes the protobuf-encoded bytes
+/// to the watch channel.
 async fn frame_bridge(
     frame_rx: smol::channel::Receiver<DisplayTree>,
     watch_tx: tokio_watch::Sender<Bytes>,
@@ -157,8 +158,11 @@ async fn frame_bridge(
     loop {
         match frame_rx.recv().await {
             Ok(tree) => {
-                let mut buf = Vec::with_capacity(tree.encoded_len());
-                match tree.encode(&mut buf) {
+                let wire = WireFrame {
+                    frame: Some(wire_frame::Frame::Snapshot(tree)),
+                };
+                let mut buf = Vec::with_capacity(wire.encoded_len());
+                match wire.encode(&mut buf) {
                     Ok(()) => {
                         let _ = watch_tx.send(Bytes::from(buf));
                     }

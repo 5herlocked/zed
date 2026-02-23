@@ -990,7 +990,7 @@ pub(crate) enum AtlasTextureKind {
     Subpixel = 2,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
 pub(crate) struct TileId(pub(crate) u32);
 

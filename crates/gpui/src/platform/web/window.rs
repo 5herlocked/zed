@@ -48,18 +48,18 @@ struct WebWindowState {
     mouse_position: Point<Pixels>,
     is_hovered: bool,
     title: String,
-    callbacks: WebWindowCallbacks,
     input_handler: Option<PlatformInputHandler>,
     canvas: Option<web_sys::HtmlCanvasElement>,
+    text_overlay: Option<web_sys::HtmlDivElement>,
     raf_handle: Option<i32>,
     pending_text_draws: Vec<TextDraw>,
 }
 
 pub(crate) struct WebWindow {
     state: Rc<RefCell<WebWindowState>>,
+    callbacks: Rc<RefCell<WebWindowCallbacks>>,
     display: Rc<dyn PlatformDisplay>,
-    sprite_atlas: Arc<dyn PlatformAtlas>,
-    // Prevent closures from being dropped while event listeners are active.
+    sprite_atlas: Arc<WebAtlas>,
     _event_closures: Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>,
 }
 
@@ -74,6 +74,19 @@ impl WebWindow {
             .unwrap_or(1.0);
 
         let canvas = Self::create_canvas(&params, scale_factor);
+        let text_overlay = Self::create_text_overlay(&params, canvas.as_ref());
+
+        let callbacks = Rc::new(RefCell::new(WebWindowCallbacks {
+            request_frame: None,
+            input: None,
+            active_status_change: None,
+            hover_status_change: None,
+            resize: None,
+            moved: None,
+            should_close: None,
+            close: None,
+            appearance_changed: None,
+        }));
 
         let state = Rc::new(RefCell::new(WebWindowState {
             bounds: params.bounds,
@@ -81,19 +94,9 @@ impl WebWindow {
             mouse_position: Point::default(),
             is_hovered: false,
             title: String::new(),
-            callbacks: WebWindowCallbacks {
-                request_frame: None,
-                input: None,
-                active_status_change: None,
-                hover_status_change: None,
-                resize: None,
-                moved: None,
-                should_close: None,
-                close: None,
-                appearance_changed: None,
-            },
             input_handler: None,
             canvas: canvas.clone(),
+            text_overlay,
             raf_handle: None,
             pending_text_draws: Vec::new(),
         }));
@@ -101,11 +104,16 @@ impl WebWindow {
         let event_closures = Rc::new(RefCell::new(Vec::new()));
 
         if let Some(ref canvas) = canvas {
-            Self::attach_event_listeners(canvas, &state, &event_closures);
+            Self::attach_event_listeners(canvas, &state, &callbacks, &event_closures);
+        }
+
+        if let Some(ref overlay) = state.borrow().text_overlay {
+            Self::attach_overlay_event_forwarding(overlay, &state, &callbacks, &event_closures);
         }
 
         Self {
             state,
+            callbacks,
             display,
             sprite_atlas: Arc::new(WebAtlas::new()),
             _event_closures: event_closures,
@@ -130,37 +138,199 @@ impl WebWindow {
         let style = canvas.style();
         style.set_property("width", &format!("{width}px")).ok()?;
         style.set_property("height", &format!("{height}px")).ok()?;
+        // Canvas needs to be positioned so the text overlay can align to it.
+        style.set_property("display", "block").ok()?;
 
-        document.body()?.append_child(&canvas).ok()?;
+        // Wrap canvas in a positioned container so the text overlay can use
+        // position:absolute relative to it.
+        let wrapper = document
+            .create_element("div")
+            .ok()?
+            .dyn_into::<web_sys::HtmlDivElement>()
+            .ok()?;
+        let wrapper_style = wrapper.style();
+        wrapper_style.set_property("position", "relative").ok()?;
+        wrapper_style
+            .set_property("width", &format!("{width}px"))
+            .ok()?;
+        wrapper_style
+            .set_property("height", &format!("{height}px"))
+            .ok()?;
+        wrapper.append_child(&canvas).ok()?;
+        document.body()?.append_child(&wrapper).ok()?;
+
         Some(canvas)
+    }
+
+    /// Create a transparent DOM overlay that sits on top of the canvas.
+    /// Text spans are placed here so the browser can natively select them.
+    /// The container has `pointer-events: none` so non-text clicks pass
+    /// through to the canvas. Individual text spans override this with
+    /// `pointer-events: auto` to enable text selection.
+    fn create_text_overlay(
+        params: &WindowParams,
+        canvas: Option<&web_sys::HtmlCanvasElement>,
+    ) -> Option<web_sys::HtmlDivElement> {
+        let document = web_sys::window()?.document()?;
+        let overlay = document
+            .create_element("div")
+            .ok()?
+            .dyn_into::<web_sys::HtmlDivElement>()
+            .ok()?;
+
+        let width = params.bounds.size.width.0;
+        let height = params.bounds.size.height.0;
+        let style = overlay.style();
+        style.set_property("position", "absolute").ok()?;
+        style.set_property("top", "0").ok()?;
+        style.set_property("left", "0").ok()?;
+        style.set_property("width", &format!("{width}px")).ok()?;
+        style.set_property("height", &format!("{height}px")).ok()?;
+        style.set_property("overflow", "hidden").ok()?;
+        // Container doesn't capture pointer events; individual text spans do.
+        style.set_property("pointer-events", "none").ok()?;
+        style.set_property("user-select", "text").ok()?;
+        style.set_property("-webkit-user-select", "text").ok()?;
+
+        // Append to the canvas wrapper (positioned container) so absolute
+        // positioning is relative to the canvas.
+        if let Some(canvas) = canvas {
+            if let Some(parent) = canvas.parent_node() {
+                parent.append_child(&overlay).ok()?;
+            }
+        } else {
+            document.body()?.append_child(&overlay).ok()?;
+        }
+
+        Some(overlay)
+    }
+
+    fn attach_overlay_event_forwarding(
+        overlay: &web_sys::HtmlDivElement,
+        state: &Rc<RefCell<WebWindowState>>,
+        callbacks: &Rc<RefCell<WebWindowCallbacks>>,
+        closures: &Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>,
+    ) {
+        let overlay_el: &web_sys::EventTarget = overlay.as_ref();
+
+        {
+            let state = state.clone();
+            let callbacks = callbacks.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let position = overlay_relative_position(&mouse_event, &state);
+                    let modifiers = web_modifiers(&mouse_event);
+                    let button = web_mouse_button(mouse_event.button());
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseDown(crate::MouseDownEvent {
+                            button, position, modifiers, click_count: 1, first_mouse: false,
+                        }));
+                    }
+                }
+            });
+            overlay_el
+                .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        {
+            let state = state.clone();
+            let callbacks = callbacks.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let position = overlay_relative_position(&mouse_event, &state);
+                    let modifiers = web_modifiers(&mouse_event);
+                    let button = web_mouse_button(mouse_event.button());
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseUp(crate::MouseUpEvent {
+                            button, position, modifiers, click_count: 1,
+                        }));
+                    }
+                }
+            });
+            overlay_el
+                .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        {
+            let state = state.clone();
+            let callbacks = callbacks.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let position = overlay_relative_position(&mouse_event, &state);
+                    let modifiers = web_modifiers(&mouse_event);
+                    state.borrow_mut().mouse_position = position;
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseMove(crate::MouseMoveEvent {
+                            position, pressed_button: None, modifiers,
+                        }));
+                    }
+                }
+            });
+            overlay_el
+                .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
+
+        {
+            let state = state.clone();
+            let callbacks = callbacks.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                event.prevent_default();
+                if let Ok(wheel_event) = event.dyn_into::<web_sys::WheelEvent>() {
+                    let mouse_event: &web_sys::MouseEvent = wheel_event.as_ref();
+                    let position = overlay_relative_position(mouse_event, &state);
+                    let modifiers = web_modifiers(mouse_event);
+                    let delta = crate::ScrollDelta::Pixels(Point {
+                        x: px(-wheel_event.delta_x() as f32),
+                        y: px(-wheel_event.delta_y() as f32),
+                    });
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                            position, delta, modifiers,
+                            touch_phase: crate::TouchPhase::Moved,
+                        }));
+                    }
+                }
+            });
+            overlay_el
+                .add_event_listener_with_callback("wheel", closure.as_ref().unchecked_ref())
+                .ok();
+            closures.borrow_mut().push(closure);
+        }
     }
 
     fn attach_event_listeners(
         canvas: &web_sys::HtmlCanvasElement,
         state: &Rc<RefCell<WebWindowState>>,
+        callbacks: &Rc<RefCell<WebWindowCallbacks>>,
         closures: &Rc<RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>>,
     ) {
-        // Make the canvas focusable so it can receive keyboard events.
         canvas.set_tab_index(0);
 
-        // Mouse move → dispatch as PlatformInput::MouseMove
+        // Mouse move
         {
             let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
                     let position = Point {
                         x: px(mouse_event.offset_x() as f32),
                         y: px(mouse_event.offset_y() as f32),
                     };
-                    let mut s = state.borrow_mut();
-                    s.mouse_position = position;
-                    s.is_hovered = true;
                     let modifiers = web_modifiers(&mouse_event);
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::MouseMove(crate::MouseMoveEvent {
-                            position,
-                            pressed_button: None,
-                            modifiers,
+                    {
+                        let mut s = state.borrow_mut();
+                        s.mouse_position = position;
+                        s.is_hovered = true;
+                    }
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseMove(crate::MouseMoveEvent {
+                            position, pressed_button: None, modifiers,
                         }));
                     }
                 }
@@ -171,9 +341,9 @@ impl WebWindow {
             closures.borrow_mut().push(closure);
         }
 
-        // Mouse down → dispatch as PlatformInput::MouseDown
+        // Mouse down
         {
-            let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
                     let position = Point {
@@ -182,14 +352,9 @@ impl WebWindow {
                     };
                     let modifiers = web_modifiers(&mouse_event);
                     let button = web_mouse_button(mouse_event.button());
-                    let mut s = state.borrow_mut();
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::MouseDown(crate::MouseDownEvent {
-                            button,
-                            position,
-                            modifiers,
-                            click_count: 1,
-                            first_mouse: false,
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseDown(crate::MouseDownEvent {
+                            button, position, modifiers, click_count: 1, first_mouse: false,
                         }));
                     }
                 }
@@ -200,9 +365,9 @@ impl WebWindow {
             closures.borrow_mut().push(closure);
         }
 
-        // Mouse up → dispatch as PlatformInput::MouseUp
+        // Mouse up
         {
-            let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
                     let position = Point {
@@ -211,13 +376,9 @@ impl WebWindow {
                     };
                     let modifiers = web_modifiers(&mouse_event);
                     let button = web_mouse_button(mouse_event.button());
-                    let mut s = state.borrow_mut();
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::MouseUp(crate::MouseUpEvent {
-                            button,
-                            position,
-                            modifiers,
-                            click_count: 1,
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::MouseUp(crate::MouseUpEvent {
+                            button, position, modifiers, click_count: 1,
                         }));
                     }
                 }
@@ -228,9 +389,9 @@ impl WebWindow {
             closures.borrow_mut().push(closure);
         }
 
-        // Scroll wheel → dispatch as PlatformInput::ScrollWheel
+        // Scroll wheel
         {
-            let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 event.prevent_default();
                 if let Ok(wheel_event) = event.dyn_into::<web_sys::WheelEvent>() {
@@ -244,12 +405,9 @@ impl WebWindow {
                         x: px(-wheel_event.delta_x() as f32),
                         y: px(-wheel_event.delta_y() as f32),
                     });
-                    let mut s = state.borrow_mut();
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
-                            position,
-                            delta,
-                            modifiers,
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                            position, delta, modifiers,
                             touch_phase: crate::TouchPhase::Moved,
                         }));
                     }
@@ -261,20 +419,17 @@ impl WebWindow {
             closures.borrow_mut().push(closure);
         }
 
-        // Keyboard down → dispatch as PlatformInput::KeyDown
+        // Keyboard down
         {
-            let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
-                    // Prevent browser default for most keys to avoid scrolling, etc.
                     keyboard_event.prevent_default();
                     let keystroke = web_keystroke(&keyboard_event);
-                    let mut s = state.borrow_mut();
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::KeyDown(crate::KeyDownEvent {
-                            keystroke,
-                            is_held: keyboard_event.repeat(),
-                            prefer_character_input: false,
+                    let is_held = keyboard_event.repeat();
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::KeyDown(crate::KeyDownEvent {
+                            keystroke, is_held, prefer_character_input: false,
                         }));
                     }
                 }
@@ -285,15 +440,14 @@ impl WebWindow {
             closures.borrow_mut().push(closure);
         }
 
-        // Keyboard up → dispatch as PlatformInput::KeyUp
+        // Keyboard up
         {
-            let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
                 if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
                     let keystroke = web_keystroke(&keyboard_event);
-                    let mut s = state.borrow_mut();
-                    if let Some(ref mut input_cb) = s.callbacks.input {
-                        input_cb(PlatformInput::KeyUp(crate::KeyUpEvent { keystroke }));
+                    if let Some(ref mut cb) = callbacks.borrow_mut().input {
+                        cb(PlatformInput::KeyUp(crate::KeyUpEvent { keystroke }));
                     }
                 }
             });
@@ -306,11 +460,11 @@ impl WebWindow {
         // Mouse leave
         {
             let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
-                let mut s = state.borrow_mut();
-                s.is_hovered = false;
-                if let Some(ref mut callback) = s.callbacks.hover_status_change {
-                    callback(false);
+                state.borrow_mut().is_hovered = false;
+                if let Some(ref mut cb) = callbacks.borrow_mut().hover_status_change {
+                    cb(false);
                 }
             });
             canvas
@@ -322,11 +476,11 @@ impl WebWindow {
         // Mouse enter
         {
             let state = state.clone();
+            let callbacks = callbacks.clone();
             let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
-                let mut s = state.borrow_mut();
-                s.is_hovered = true;
-                if let Some(ref mut callback) = s.callbacks.hover_status_change {
-                    callback(true);
+                state.borrow_mut().is_hovered = true;
+                if let Some(ref mut cb) = callbacks.borrow_mut().hover_status_change {
+                    cb(true);
                 }
             });
             canvas
@@ -336,21 +490,26 @@ impl WebWindow {
         }
     }
 
-    fn start_animation_loop(state: &Rc<RefCell<WebWindowState>>) {
+    fn start_animation_loop(
+        state: &Rc<RefCell<WebWindowState>>,
+        callbacks: &Rc<RefCell<WebWindowCallbacks>>,
+    ) {
         let state = state.clone();
-        fn schedule_frame(state: &Rc<RefCell<WebWindowState>>) {
+        let callbacks = callbacks.clone();
+        fn schedule_frame(
+            state: &Rc<RefCell<WebWindowState>>,
+            callbacks: &Rc<RefCell<WebWindowCallbacks>>,
+        ) {
             let state_clone = state.clone();
+            let callbacks_clone = callbacks.clone();
             let closure = Closure::once(move |_: f64| {
-                {
-                    let mut s = state_clone.borrow_mut();
-                    if let Some(ref mut callback) = s.callbacks.request_frame {
-                        callback(RequestFrameOptions {
-                            require_presentation: false,
-                            force_render: false,
-                        });
-                    }
+                if let Some(ref mut cb) = callbacks_clone.borrow_mut().request_frame {
+                    cb(RequestFrameOptions {
+                        require_presentation: false,
+                        force_render: false,
+                    });
                 }
-                schedule_frame(&state_clone);
+                schedule_frame(&state_clone, &callbacks_clone);
             });
             if let Some(window) = web_sys::window() {
                 let handle = window
@@ -360,7 +519,7 @@ impl WebWindow {
             }
             closure.forget();
         }
-        schedule_frame(&state);
+        schedule_frame(&state, &callbacks);
     }
 }
 
@@ -405,6 +564,28 @@ impl PlatformWindow for WebWindow {
             canvas.set_width((size.width.0 * sf) as u32);
             canvas.set_height((size.height.0 * sf) as u32);
             let style = canvas.style();
+            style
+                .set_property("width", &format!("{}px", size.width.0))
+                .ok();
+            style
+                .set_property("height", &format!("{}px", size.height.0))
+                .ok();
+            // Also resize the wrapper container.
+            if let Some(parent) = canvas
+                .parent_element()
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                let parent_style = parent.style();
+                parent_style
+                    .set_property("width", &format!("{}px", size.width.0))
+                    .ok();
+                parent_style
+                    .set_property("height", &format!("{}px", size.height.0))
+                    .ok();
+            }
+        }
+        if let Some(ref overlay) = state.text_overlay {
+            let style = overlay.style();
             style
                 .set_property("width", &format!("{}px", size.width.0))
                 .ok();
@@ -510,36 +691,36 @@ impl PlatformWindow for WebWindow {
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
-        self.state.borrow_mut().callbacks.request_frame = Some(callback);
-        Self::start_animation_loop(&self.state);
+        self.callbacks.borrow_mut().request_frame = Some(callback);
+        Self::start_animation_loop(&self.state, &self.callbacks);
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
-        self.state.borrow_mut().callbacks.input = Some(callback);
+        self.callbacks.borrow_mut().input = Some(callback);
     }
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
-        self.state.borrow_mut().callbacks.active_status_change = Some(callback);
+        self.callbacks.borrow_mut().active_status_change = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
-        self.state.borrow_mut().callbacks.hover_status_change = Some(callback);
+        self.callbacks.borrow_mut().hover_status_change = Some(callback);
     }
 
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>) {
-        self.state.borrow_mut().callbacks.resize = Some(callback);
+        self.callbacks.borrow_mut().resize = Some(callback);
     }
 
     fn on_moved(&self, callback: Box<dyn FnMut()>) {
-        self.state.borrow_mut().callbacks.moved = Some(callback);
+        self.callbacks.borrow_mut().moved = Some(callback);
     }
 
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
-        self.state.borrow_mut().callbacks.should_close = Some(callback);
+        self.callbacks.borrow_mut().should_close = Some(callback);
     }
 
     fn on_close(&self, callback: Box<dyn FnOnce()>) {
-        self.state.borrow_mut().callbacks.close = Some(callback);
+        self.callbacks.borrow_mut().close = Some(callback);
     }
 
     fn on_hit_test_window_control(
@@ -549,10 +730,11 @@ impl PlatformWindow for WebWindow {
     }
 
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
-        self.state.borrow_mut().callbacks.appearance_changed = Some(callback);
+        self.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
     fn draw(&self, scene: &Scene) {
+        let atlas = self.sprite_atlas.clone();
         let mut state = self.state.borrow_mut();
         let Some(ref canvas) = state.canvas else {
             return;
@@ -568,9 +750,9 @@ impl PlatformWindow for WebWindow {
         let height = canvas.height() as f64;
         ctx.clear_rect(0.0, 0.0, width, height);
 
-        let scale = state.scale_factor as f64;
-
         // Walk paint_operations in order to respect layering.
+        // All coordinates in the scene are in ScaledPixels (physical/device pixels),
+        // matching the canvas's physical pixel dimensions.
         for operation in &scene.paint_operations {
             match operation {
                 crate::scene::PaintOperation::StartLayer(clip) => {
@@ -587,13 +769,16 @@ impl PlatformWindow for WebWindow {
                     ctx.restore();
                 }
                 crate::scene::PaintOperation::Primitive(primitive) => {
-                    paint_primitive(&ctx, primitive, scale);
+                    paint_primitive(&ctx, primitive, &atlas);
                 }
             }
         }
 
-        // Render text draws collected during the paint phase.
-        for text_draw in state.pending_text_draws.drain(..) {
+        // Render text on canvas for visual display.
+        // Text draws use logical pixels, so we scale by the device pixel ratio
+        // to match the canvas's physical pixel dimensions.
+        let scale = state.scale_factor as f64;
+        for text_draw in &state.pending_text_draws {
             let color = hsla_to_css_string(text_draw.color);
             let font_size = text_draw.font_size * scale as f32;
             let weight = text_draw.font_weight;
@@ -618,6 +803,60 @@ impl PlatformWindow for WebWindow {
             )
             .ok();
         }
+
+        // Also render text as invisible DOM spans in the overlay so the
+        // browser's native text selection works. The spans are positioned
+        // identically to the canvas text but use transparent color — the
+        // canvas provides the visual rendering while the DOM provides
+        // selectability.
+        let overlay = state.text_overlay.clone();
+        let text_draws: Vec<TextDraw> = state.pending_text_draws.drain(..).collect();
+
+        if let Some(overlay) = overlay {
+            overlay.set_inner_html("");
+
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                for text_draw in text_draws {
+                    if let Ok(span) = document.create_element("span") {
+                        let family = if text_draw.font_family.is_empty() {
+                            "sans-serif"
+                        } else {
+                            &text_draw.font_family
+                        };
+                        let font_style = if text_draw.font_style_italic {
+                            "italic"
+                        } else {
+                            "normal"
+                        };
+                        let span_style = format!(
+                            "position:absolute;\
+                             left:{}px;\
+                             top:{}px;\
+                             font-size:{}px;\
+                             font-weight:{};\
+                             font-style:{};\
+                             font-family:{};\
+                             color:transparent;\
+                             white-space:pre;\
+                             line-height:1;\
+                             pointer-events:auto;\
+                             user-select:text;\
+                             -webkit-user-select:text;\
+                             cursor:text;",
+                            text_draw.origin_x,
+                            text_draw.origin_y,
+                            text_draw.font_size,
+                            text_draw.font_weight,
+                            font_style,
+                            family,
+                        );
+                        span.set_attribute("style", &span_style).ok();
+                        span.set_text_content(Some(&text_draw.text));
+                        overlay.append_child(&span).ok();
+                    }
+                }
+            }
+        }
     }
 
     fn push_text_draw(&self, draw: TextDraw) {
@@ -639,10 +878,32 @@ impl PlatformWindow for WebWindow {
     }
 }
 
+/// Compute mouse position relative to the canvas from a mouse event that
+/// may have been captured by the text overlay. Uses the canvas bounding
+/// rect from the state to convert page coordinates.
+fn overlay_relative_position(
+    event: &web_sys::MouseEvent,
+    state: &Rc<RefCell<WebWindowState>>,
+) -> Point<Pixels> {
+    let s = state.borrow();
+    if let Some(ref canvas) = s.canvas {
+        let rect = canvas.get_bounding_client_rect();
+        Point {
+            x: px((event.client_x() as f64 - rect.left()) as f32),
+            y: px((event.client_y() as f64 - rect.top()) as f32),
+        }
+    } else {
+        Point {
+            x: px(event.client_x() as f32),
+            y: px(event.client_y() as f32),
+        }
+    }
+}
+
 fn paint_primitive(
     ctx: &web_sys::CanvasRenderingContext2d,
     primitive: &crate::scene::Primitive,
-    _scale: f64,
+    atlas: &WebAtlas,
 ) {
     match primitive {
         crate::scene::Primitive::Quad(quad) => {
@@ -665,7 +926,6 @@ fn paint_primitive(
                 }
             }
 
-            // Border
             let border_top: f64 = quad.border_widths.top.into();
             let border_rgba: crate::Rgba = quad.border_color.into();
             if border_top > 0.0 && border_rgba.a > 0.001 {
@@ -710,15 +970,235 @@ fn paint_primitive(
             ctx.line_to(x + w, y);
             ctx.stroke();
         }
-        // Sprites (text glyphs) — we can't easily render these from atlas tiles
-        // in Canvas2D. For now, skip them. Text will be rendered when we add
-        // a DOM overlay or Canvas2D text path.
-        crate::scene::Primitive::MonochromeSprite(_)
-        | crate::scene::Primitive::SubpixelSprite(_)
-        | crate::scene::Primitive::PolychromeSprite(_)
-        | crate::scene::Primitive::Path(_)
-        | crate::scene::Primitive::Surface(_) => {}
+        crate::scene::Primitive::MonochromeSprite(sprite) => {
+            paint_monochrome_sprite(ctx, sprite, atlas);
+        }
+        crate::scene::Primitive::SubpixelSprite(sprite) => {
+            paint_subpixel_sprite(ctx, sprite, atlas);
+        }
+        crate::scene::Primitive::PolychromeSprite(sprite) => {
+            paint_polychrome_sprite(ctx, sprite, atlas);
+        }
+        crate::scene::Primitive::Path(path) => {
+            paint_path(ctx, path);
+        }
+        crate::scene::Primitive::Surface(_) => {}
     }
+}
+
+fn colorize_alpha_mask(bytes: &[u8], pixel_count: usize, rgba: crate::Rgba) -> Option<Vec<u8>> {
+    let r = (rgba.r * 255.0) as u8;
+    let g = (rgba.g * 255.0) as u8;
+    let b = (rgba.b * 255.0) as u8;
+
+    let mut out = vec![0u8; pixel_count * 4];
+    for i in 0..pixel_count {
+        let alpha = if bytes.len() == pixel_count {
+            *bytes.get(i)?
+        } else if bytes.len() >= pixel_count * 4 {
+            *bytes.get(i * 4 + 3)?
+        } else {
+            return None;
+        };
+        let blended = ((alpha as f32 / 255.0) * rgba.a * 255.0) as u8;
+        out[i * 4] = r;
+        out[i * 4 + 1] = g;
+        out[i * 4 + 2] = b;
+        out[i * 4 + 3] = blended;
+    }
+    Some(out)
+}
+
+fn draw_rgba_to_canvas(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    rgba_data: &[u8],
+    src_w: u32,
+    src_h: u32,
+    dest_x: f64,
+    dest_y: f64,
+    dest_w: f64,
+    dest_h: f64,
+) {
+    if src_w == 0 || src_h == 0 {
+        return;
+    }
+    let expected = (src_w * src_h * 4) as usize;
+    if rgba_data.len() < expected {
+        return;
+    }
+
+    let clamped = wasm_bindgen::Clamped(&rgba_data[..expected]);
+    let Ok(image_data) =
+        web_sys::ImageData::new_with_u8_clamped_array_and_sh(clamped, src_w, src_h)
+    else {
+        return;
+    };
+
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(el) = document.create_element("canvas") else {
+        return;
+    };
+    let Ok(offscreen) = el.dyn_into::<web_sys::HtmlCanvasElement>() else {
+        return;
+    };
+    offscreen.set_width(src_w);
+    offscreen.set_height(src_h);
+    let Ok(Some(obj)) = offscreen.get_context("2d") else {
+        return;
+    };
+    let Ok(off_ctx) = obj.dyn_into::<web_sys::CanvasRenderingContext2d>() else {
+        return;
+    };
+    off_ctx.put_image_data(&image_data, 0.0, 0.0).ok();
+    ctx.draw_image_with_html_canvas_element_and_dw_and_dh(
+        &offscreen, dest_x, dest_y, dest_w, dest_h,
+    )
+    .ok();
+}
+
+fn paint_monochrome_sprite(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    sprite: &crate::scene::MonochromeSprite,
+    atlas: &WebAtlas,
+) {
+    let Some(bytes) = atlas.get_pixel_data(sprite.tile.tile_id) else {
+        return;
+    };
+    if bytes.is_empty() {
+        return;
+    }
+
+    let tile_w = sprite.tile.bounds.size.width.0 as u32;
+    let tile_h = sprite.tile.bounds.size.height.0 as u32;
+    if tile_w == 0 || tile_h == 0 {
+        return;
+    }
+
+    let rgba: crate::Rgba = sprite.color.into();
+    let pixel_count = (tile_w * tile_h) as usize;
+    let Some(rgba_data) = colorize_alpha_mask(&bytes, pixel_count, rgba) else {
+        return;
+    };
+
+    let x: f64 = sprite.bounds.origin.x.into();
+    let y: f64 = sprite.bounds.origin.y.into();
+    let w: f64 = sprite.bounds.size.width.into();
+    let h: f64 = sprite.bounds.size.height.into();
+    draw_rgba_to_canvas(ctx, &rgba_data, tile_w, tile_h, x, y, w, h);
+}
+
+fn paint_subpixel_sprite(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    sprite: &crate::scene::SubpixelSprite,
+    atlas: &WebAtlas,
+) {
+    let Some(bytes) = atlas.get_pixel_data(sprite.tile.tile_id) else {
+        return;
+    };
+    if bytes.is_empty() {
+        return;
+    }
+
+    let tile_w = sprite.tile.bounds.size.width.0 as u32;
+    let tile_h = sprite.tile.bounds.size.height.0 as u32;
+    if tile_w == 0 || tile_h == 0 {
+        return;
+    }
+
+    let rgba: crate::Rgba = sprite.color.into();
+    let pixel_count = (tile_w * tile_h) as usize;
+    let Some(rgba_data) = colorize_alpha_mask(&bytes, pixel_count, rgba) else {
+        return;
+    };
+
+    let x: f64 = sprite.bounds.origin.x.into();
+    let y: f64 = sprite.bounds.origin.y.into();
+    let w: f64 = sprite.bounds.size.width.into();
+    let h: f64 = sprite.bounds.size.height.into();
+    draw_rgba_to_canvas(ctx, &rgba_data, tile_w, tile_h, x, y, w, h);
+}
+
+fn paint_polychrome_sprite(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    sprite: &crate::scene::PolychromeSprite,
+    atlas: &WebAtlas,
+) {
+    let Some(bytes) = atlas.get_pixel_data(sprite.tile.tile_id) else {
+        return;
+    };
+    if bytes.is_empty() {
+        return;
+    }
+
+    let tile_w = sprite.tile.bounds.size.width.0 as u32;
+    let tile_h = sprite.tile.bounds.size.height.0 as u32;
+    if tile_w == 0 || tile_h == 0 {
+        return;
+    }
+
+    let pixel_count = (tile_w * tile_h) as usize;
+    let expected = pixel_count * 4;
+    if bytes.len() < expected {
+        return;
+    }
+
+    let mut rgba_data = bytes[..expected].to_vec();
+    for i in 0..pixel_count {
+        let off = i * 4;
+        if sprite.grayscale {
+            let r = rgba_data[off] as f32;
+            let g = rgba_data[off + 1] as f32;
+            let b = rgba_data[off + 2] as f32;
+            let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+            rgba_data[off] = gray;
+            rgba_data[off + 1] = gray;
+            rgba_data[off + 2] = gray;
+        }
+        rgba_data[off + 3] = (rgba_data[off + 3] as f32 * sprite.opacity) as u8;
+    }
+
+    let x: f64 = sprite.bounds.origin.x.into();
+    let y: f64 = sprite.bounds.origin.y.into();
+    let w: f64 = sprite.bounds.size.width.into();
+    let h: f64 = sprite.bounds.size.height.into();
+    draw_rgba_to_canvas(ctx, &rgba_data, tile_w, tile_h, x, y, w, h);
+}
+
+fn paint_path(
+    ctx: &web_sys::CanvasRenderingContext2d,
+    path: &crate::scene::Path<crate::ScaledPixels>,
+) {
+    if path.vertices.is_empty() {
+        return;
+    }
+
+    let color = hsla_to_css_string(path.color.solid);
+    ctx.set_fill_style_str(&color);
+
+    ctx.begin_path();
+    let mut i = 0;
+    while i + 2 < path.vertices.len() {
+        let v0 = &path.vertices[i];
+        let v1 = &path.vertices[i + 1];
+        let v2 = &path.vertices[i + 2];
+
+        let x0: f64 = v0.xy_position.x.into();
+        let y0: f64 = v0.xy_position.y.into();
+        let x1: f64 = v1.xy_position.x.into();
+        let y1: f64 = v1.xy_position.y.into();
+        let x2: f64 = v2.xy_position.x.into();
+        let y2: f64 = v2.xy_position.y.into();
+
+        ctx.move_to(x0, y0);
+        ctx.line_to(x1, y1);
+        ctx.line_to(x2, y2);
+        ctx.close_path();
+
+        i += 3;
+    }
+    ctx.fill();
 }
 
 fn hsla_to_css_string(hsla: crate::Hsla) -> String {
@@ -831,6 +1311,7 @@ fn web_keystroke(event: &web_sys::KeyboardEvent) -> crate::Keystroke {
 struct WebAtlasState {
     next_id: u32,
     tiles: HashMap<AtlasKey, AtlasTile>,
+    pixel_data: HashMap<TileId, Vec<u8>>,
 }
 
 struct WebAtlas(Mutex<WebAtlasState>);
@@ -840,7 +1321,12 @@ impl WebAtlas {
         WebAtlas(Mutex::new(WebAtlasState {
             next_id: 0,
             tiles: HashMap::default(),
+            pixel_data: HashMap::default(),
         }))
+    }
+
+    fn get_pixel_data(&self, tile_id: TileId) -> Option<Vec<u8>> {
+        self.0.lock().pixel_data.get(&tile_id).cloned()
     }
 }
 
@@ -856,7 +1342,7 @@ impl PlatformAtlas for WebAtlas {
         }
         drop(state);
 
-        let Some((size, _)) = build()? else {
+        let Some((size, bytes)) = build()? else {
             return Ok(None);
         };
 
@@ -879,11 +1365,18 @@ impl PlatformAtlas for WebAtlas {
             },
         };
 
+        if !bytes.is_empty() {
+            state.pixel_data.insert(TileId(tile_id), bytes.into_owned());
+        }
+
         state.tiles.insert(key.clone(), tile.clone());
         Ok(Some(tile))
     }
 
     fn remove(&self, key: &AtlasKey) {
-        self.0.lock().tiles.remove(key);
+        let mut state = self.0.lock();
+        if let Some(tile) = state.tiles.remove(key) {
+            state.pixel_data.remove(&tile.tile_id);
+        }
     }
 }

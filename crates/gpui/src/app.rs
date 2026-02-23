@@ -239,10 +239,20 @@ impl Application {
     {
         let this = self.0.clone();
         let platform = self.0.borrow().platform.clone();
+
+        // On WASM, platform.run() returns immediately (no blocking event loop).
+        // Keep the App alive for the lifetime of the page so spawned async
+        // tasks can continue to access it.
+        #[cfg(target_arch = "wasm32")]
+        let leaked = this.clone();
+
         platform.run(Box::new(move || {
             let cx = &mut *this.borrow_mut();
             on_finish_launching(cx);
         }));
+
+        #[cfg(target_arch = "wasm32")]
+        std::mem::forget(leaked);
     }
 
     /// Register a handler to be invoked when the platform instructs the application

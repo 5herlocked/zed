@@ -38,8 +38,23 @@
                 status.textContent = 'initializing...';
                 await init();
 
-                const ws_url = new URLSearchParams(location.search).get('server')
-                    || 'ws://localhost:8080/stream';
+                // Derive the WebSocket URL from the current page origin so it
+                // works in port-forwarded environments (e.g. Gitpod/Ona).
+                // The page is served on port 3000; the WS server is on 8080.
+                // Override with ?server=ws://... if needed.
+                let ws_url = new URLSearchParams(location.search).get('server');
+                if (!ws_url) {
+                    const host = location.hostname;
+                    // Port-forwarded URLs embed the port in the hostname
+                    // (e.g. "3000--env-id.gitpod.dev" → "8080--env-id.gitpod.dev")
+                    const portPrefix = host.match(/^(\d+)--/);
+                    if (portPrefix) {
+                        const wsHost = host.replace(/^\d+--/, '8080--');
+                        ws_url = `wss://${wsHost}/stream`;
+                    } else {
+                        ws_url = `ws://${host}:8080/stream`;
+                    }
+                }
 
                 status.textContent = `connecting to ${ws_url}`;
                 launch(ws_url);

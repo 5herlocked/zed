@@ -155,7 +155,7 @@ impl BackgroundExecutor {
         let location = std::panic::Location::caller();
         let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runnable_meta = RunnableMeta { location, closed };
-        let (runnable, _task) = async_task::Builder::new()
+        let (runnable, task) = async_task::Builder::new()
             .metadata(runnable_meta)
             .spawn(
                 move |_| async move {
@@ -166,6 +166,7 @@ impl BackgroundExecutor {
                     dispatcher.dispatch(runnable, Priority::default());
                 },
             );
+        task.detach();
         runnable.schedule();
         Task(TaskInner::Spawned(rx))
     }
@@ -284,7 +285,7 @@ impl ForegroundExecutor {
         let location = std::panic::Location::caller();
         let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runnable_meta = RunnableMeta { location, closed };
-        let (runnable, _task) = async_task::Builder::new()
+        let (runnable, task) = async_task::Builder::new()
             .metadata(runnable_meta)
             .spawn_local(
                 move |_| async move {
@@ -295,6 +296,8 @@ impl ForegroundExecutor {
                     dispatcher.dispatch_on_main_thread(runnable, Priority::default());
                 },
             );
+        // Keep the async_task handle alive so the task isn't cancelled.
+        task.detach();
         runnable.schedule();
         Task(TaskInner::Spawned(rx))
     }
