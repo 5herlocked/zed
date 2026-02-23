@@ -124,6 +124,18 @@ fn main() -> Result<()> {
         editor::init(cx);
         workspace::init(app_state.clone(), cx);
 
+        // ── 12b. Load default keybindings ───────────────────────────────
+        {
+            use settings::{DEFAULT_KEYMAP_PATH, KeymapFile, KeybindSource};
+            match KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, Some(KeybindSource::Default), cx) {
+                Ok(bindings) => {
+                    info!("loaded {} default keybindings from {}", bindings.len(), DEFAULT_KEYMAP_PATH);
+                    cx.bind_keys(bindings);
+                }
+                Err(e) => error!("failed to load default keymap: {e:#}"),
+            }
+        }
+
         // ── 13. Open an empty workspace ─────────────────────────────────
         workspace::open_new(
             Default::default(),
