@@ -111,6 +111,52 @@ impl WebWindow {
             Self::attach_overlay_event_forwarding(overlay, &state, &callbacks, &event_closures);
         }
 
+        // Listen for browser window resize events and forward them to GPUI.
+        {
+            let state = state.clone();
+            let callbacks = callbacks.clone();
+            let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |_event: web_sys::Event| {
+                if let Some(browser_window) = web_sys::window() {
+                    let width = browser_window
+                        .inner_width()
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(1280.0) as f32;
+                    let height = browser_window
+                        .inner_height()
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(720.0) as f32;
+                    let scale_factor = browser_window.device_pixel_ratio() as f32;
+
+                    let new_size = Size {
+                        width: Pixels(width),
+                        height: Pixels(height),
+                    };
+
+                    {
+                        let mut s = state.borrow_mut();
+                        s.bounds.size = new_size;
+                        s.scale_factor = scale_factor;
+                        if let Some(ref canvas) = s.canvas {
+                            canvas.set_width((width * scale_factor) as u32);
+                            canvas.set_height((height * scale_factor) as u32);
+                        }
+                    }
+
+                    if let Some(ref mut cb) = callbacks.borrow_mut().resize {
+                        cb(new_size, scale_factor);
+                    }
+                }
+            });
+            if let Some(browser_window) = web_sys::window() {
+                browser_window
+                    .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref())
+                    .ok();
+            }
+            event_closures.borrow_mut().push(closure);
+        }
+
         Self {
             state,
             callbacks,
@@ -136,9 +182,8 @@ impl WebWindow {
         canvas.set_width((width * scale_factor) as u32);
         canvas.set_height((height * scale_factor) as u32);
         let style = canvas.style();
-        style.set_property("width", &format!("{width}px")).ok()?;
-        style.set_property("height", &format!("{height}px")).ok()?;
-        // Canvas needs to be positioned so the text overlay can align to it.
+        style.set_property("width", "100%").ok()?;
+        style.set_property("height", "100%").ok()?;
         style.set_property("display", "block").ok()?;
 
         // Wrap canvas in a positioned container so the text overlay can use
@@ -150,12 +195,8 @@ impl WebWindow {
             .ok()?;
         let wrapper_style = wrapper.style();
         wrapper_style.set_property("position", "relative").ok()?;
-        wrapper_style
-            .set_property("width", &format!("{width}px"))
-            .ok()?;
-        wrapper_style
-            .set_property("height", &format!("{height}px"))
-            .ok()?;
+        wrapper_style.set_property("width", "100%").ok()?;
+        wrapper_style.set_property("height", "100%").ok()?;
         wrapper.append_child(&canvas).ok()?;
         document.body()?.append_child(&wrapper).ok()?;
 
@@ -168,7 +209,7 @@ impl WebWindow {
     /// through to the canvas. Individual text spans override this with
     /// `pointer-events: auto` to enable text selection.
     fn create_text_overlay(
-        params: &WindowParams,
+        _params: &WindowParams,
         canvas: Option<&web_sys::HtmlCanvasElement>,
     ) -> Option<web_sys::HtmlDivElement> {
         let document = web_sys::window()?.document()?;
@@ -178,14 +219,12 @@ impl WebWindow {
             .dyn_into::<web_sys::HtmlDivElement>()
             .ok()?;
 
-        let width = params.bounds.size.width.0;
-        let height = params.bounds.size.height.0;
         let style = overlay.style();
         style.set_property("position", "absolute").ok()?;
         style.set_property("top", "0").ok()?;
         style.set_property("left", "0").ok()?;
-        style.set_property("width", &format!("{width}px")).ok()?;
-        style.set_property("height", &format!("{height}px")).ok()?;
+        style.set_property("width", "100%").ok()?;
+        style.set_property("height", "100%").ok()?;
         style.set_property("overflow", "hidden").ok()?;
         // Container doesn't capture pointer events; individual text spans do.
         style.set_property("pointer-events", "none").ok()?;
@@ -563,26 +602,8 @@ impl PlatformWindow for WebWindow {
             let sf = state.scale_factor;
             canvas.set_width((size.width.0 * sf) as u32);
             canvas.set_height((size.height.0 * sf) as u32);
-            let style = canvas.style();
-            style
-                .set_property("width", &format!("{}px", size.width.0))
-                .ok();
-            style
-                .set_property("height", &format!("{}px", size.height.0))
-                .ok();
-            // Also resize the wrapper container.
-            if let Some(parent) = canvas
-                .parent_element()
-                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
-            {
-                let parent_style = parent.style();
-                parent_style
-                    .set_property("width", &format!("{}px", size.width.0))
-                    .ok();
-                parent_style
-                    .set_property("height", &format!("{}px", size.height.0))
-                    .ok();
-            }
+            // CSS sizing uses 100% to fill the viewport; only the pixel
+            // buffer dimensions (set_width/set_height above) change.
         }
         if let Some(ref overlay) = state.text_overlay {
             let style = overlay.style();

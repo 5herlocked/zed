@@ -72,6 +72,8 @@ pub fn launch(ws_url: &str) -> Result<(), JsValue> {
 
         setup_resize_listener(&connection);
         setup_keyboard_listener(&connection);
+        setup_mouse_move_listener(&connection);
+        setup_mouse_button_listener(&connection);
 
         console_log("zed_web: opening GPUI window");
         let conn = connection.clone();
@@ -143,6 +145,16 @@ fn setup_keyboard_listener(connection: &Rc<Connection>) {
                     if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
                         let modifiers =
                             connection::modifiers_from_keyboard_event(&keyboard_event);
+                        log::debug!(
+                            "[client keydown] key={:?} code={:?} ctrl={} alt={} shift={} meta={} repeat={}",
+                            keyboard_event.key(),
+                            keyboard_event.code(),
+                            modifiers.control,
+                            modifiers.alt,
+                            modifiers.shift,
+                            modifiers.meta,
+                            keyboard_event.repeat(),
+                        );
                         conn.send_key_down(keyboard_event.key(), modifiers).ok();
                     }
                 });
@@ -160,6 +172,15 @@ fn setup_keyboard_listener(connection: &Rc<Connection>) {
                     if let Ok(keyboard_event) = event.dyn_into::<web_sys::KeyboardEvent>() {
                         let modifiers =
                             connection::modifiers_from_keyboard_event(&keyboard_event);
+                        log::debug!(
+                            "[client keyup] key={:?} code={:?} ctrl={} alt={} shift={} meta={}",
+                            keyboard_event.key(),
+                            keyboard_event.code(),
+                            modifiers.control,
+                            modifiers.alt,
+                            modifiers.shift,
+                            modifiers.meta,
+                        );
                         conn.send_key_up(keyboard_event.key(), modifiers).ok();
                     }
                 });
@@ -170,3 +191,81 @@ fn setup_keyboard_listener(connection: &Rc<Connection>) {
         }
     }
 }
+
+fn setup_mouse_move_listener(connection: &Rc<Connection>) {
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        let conn = connection.clone();
+        let closure =
+            Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                    let modifiers = connection::modifiers_from_mouse_event(&mouse_event);
+                    conn.send_mouse_move(
+                        mouse_event.client_x() as f32,
+                        mouse_event.client_y() as f32,
+                        modifiers,
+                    )
+                    .ok();
+                }
+            });
+        document
+            .add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())
+            .ok();
+        closure.forget();
+    }
+}
+
+/// Attach window-level mousedown/mouseup listeners so ALL mouse button events
+/// reach the server as positional PlatformInput. GPUI handles hit-testing
+/// internally — it needs raw window-position events, not node-targeted ones.
+fn setup_mouse_button_listener(connection: &Rc<Connection>) {
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        // mousedown
+        {
+            let conn = connection.clone();
+            let closure =
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                    if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                        let modifiers = connection::modifiers_from_mouse_event(&mouse_event);
+                        conn.send_mouse_down(
+                            0,
+                            None,
+                            mouse_event.client_x() as f32,
+                            mouse_event.client_y() as f32,
+                            mouse_event.button() as u32,
+                            modifiers,
+                        )
+                        .ok();
+                    }
+                });
+            document
+                .add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())
+                .ok();
+            closure.forget();
+        }
+
+        // mouseup
+        {
+            let conn = connection.clone();
+            let closure =
+                Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+                    if let Ok(mouse_event) = event.dyn_into::<web_sys::MouseEvent>() {
+                        let modifiers = connection::modifiers_from_mouse_event(&mouse_event);
+                        conn.send_mouse_up(
+                            0,
+                            None,
+                            mouse_event.client_x() as f32,
+                            mouse_event.client_y() as f32,
+                            mouse_event.button() as u32,
+                            modifiers,
+                        )
+                        .ok();
+                    }
+                });
+            document
+                .add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())
+                .ok();
+            closure.forget();
+        }
+    }
+}
+

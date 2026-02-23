@@ -279,7 +279,13 @@ message DisplayActionKind {
         KeyDownAction key_down = 6;
         KeyUpAction key_up = 7;
         ResizeAction resize = 8;
+        MouseMoveAction mouse_move = 9;
     }
+}
+
+message MouseMoveAction {
+    Point position = 1;
+    DisplayModifiers modifiers = 2;
 }
 
 message ClickAction {

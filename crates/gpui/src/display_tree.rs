@@ -60,6 +60,7 @@ pub use proto::KeyDownAction;
 pub use proto::KeyUpAction;
 pub use proto::ListKind;
 pub use proto::MouseDownAction;
+pub use proto::MouseMoveAction;
 pub use proto::MouseUpAction;
 pub use proto::Point;
 pub use proto::RemoveChildPatch;

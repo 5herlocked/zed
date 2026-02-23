@@ -191,6 +191,32 @@ impl Connection {
         })
     }
 
+    /// Send a mouse move action with position.
+    pub fn send_mouse_move(
+        &self,
+        x: f32,
+        y: f32,
+        modifiers: DisplayModifiers,
+    ) -> Result<(), JsValue> {
+        use gpui::display_tree::MouseMoveAction;
+        self.send(&WireFrame {
+            frame: Some(wire_frame::Frame::Action(DisplayAction {
+                node_id: Some(DisplayNodeId { id: 0 }),
+                element_id: None,
+                action: Some(DisplayActionKind {
+                    action: Some(
+                        gpui::display_tree::display_action_kind::Action::MouseMove(
+                            MouseMoveAction {
+                                position: Some(Point { x, y }),
+                                modifiers: Some(modifiers),
+                            },
+                        ),
+                    ),
+                }),
+            })),
+        })
+    }
+
     /// Send a scroll action.
     pub fn send_scroll(
         &self,

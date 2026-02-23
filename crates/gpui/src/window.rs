@@ -1307,7 +1307,70 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move |event| {
                 handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
+                    .update(&mut cx, |_, window, cx| {
+                        #[cfg(any(target_arch = "wasm32", feature = "headless-web"))]
+                        let key_down_event = if let PlatformInput::KeyDown(ref kd) = event {
+                            log::debug!(
+                                "[gpui on_input] KeyDown: key={:?} key_char={:?} mods={{ctrl={}, alt={}, shift={}, platform={}, fn={}}}",
+                                kd.keystroke.key,
+                                kd.keystroke.key_char,
+                                kd.keystroke.modifiers.control,
+                                kd.keystroke.modifiers.alt,
+                                kd.keystroke.modifiers.shift,
+                                kd.keystroke.modifiers.platform,
+                                kd.keystroke.modifiers.function,
+                            );
+                            Some(kd.clone())
+                        } else {
+                            None
+                        };
+
+                        let result = window.dispatch_event(event, cx);
+
+                        // On platforms without native IME (web, streaming), when a
+                        // KeyDown event propagates (no keybinding matched), fall back
+                        // to dispatching the key_char to the input handler. Native
+                        // platforms (macOS, Windows, Linux) handle this via their own
+                        // IME integration (insertText:, WM_CHAR, XIM, etc.).
+                        #[cfg(any(target_arch = "wasm32", feature = "headless-web"))]
+                        if let Some(kd) = key_down_event {
+                            if result.propagate {
+                                let keystroke = kd.keystroke.with_simulated_ime();
+                                log::debug!(
+                                    "[gpui on_input] propagated, simulated_ime: key={:?} key_char={:?}",
+                                    keystroke.key,
+                                    keystroke.key_char,
+                                );
+                                if let Some(ref input) = keystroke.key_char {
+                                    if let Some(mut input_handler) =
+                                        window.platform_window.take_input_handler()
+                                    {
+                                        log::debug!(
+                                            "[gpui on_input] dispatching to input_handler: {:?}",
+                                        input,
+                                        );
+                                        input_handler.dispatch_input(input, window, cx);
+                                        window.platform_window.set_input_handler(input_handler);
+                                        return DispatchEventResult {
+                                            propagate: false,
+                                            default_prevented: false,
+                                        };
+                                    } else {
+                                        log::debug!(
+                                            "[gpui on_input] no input_handler available (editor not focused?)",
+                                        );
+                                    }
+                                }
+                            } else {
+                                log::debug!(
+                                    "[gpui on_input] consumed by binding: key={:?}",
+                                    kd.keystroke.key,
+                                );
+                            }
+                        }
+
+                        result
+                    })
                     .log_err()
                     .unwrap_or(DispatchEventResult::default())
             })

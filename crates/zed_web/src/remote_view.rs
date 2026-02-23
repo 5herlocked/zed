@@ -5,8 +5,8 @@ use gpui::display_tree::{
     InteractionFlags, WireFrame,
 };
 use gpui::{
-    div, px, AnyElement, Context, Div, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, Rgba, SharedString, Styled, Window,
+    div, px, AnyElement, Context, Div, InteractiveElement, IntoElement, ParentElement, Render,
+    Rgba, SharedString, Styled, Window,
 };
 
 use crate::Connection;
@@ -82,15 +82,27 @@ impl RemoteView {
 
     /// Convert a DisplayNode subtree into GPUI elements, attaching interaction
     /// handlers for nodes that have the appropriate InteractionFlags set.
-    fn render_node(&self, node: &DisplayNode) -> AnyElement {
+    ///
+    /// `parent_origin` is the window-absolute origin of the parent node.
+    /// Since the server captures bounds in window-absolute coordinates but
+    /// CSS absolute positioning is relative to the positioned parent, we
+    /// subtract the parent origin to get parent-relative coordinates.
+    fn render_node(&self, node: &DisplayNode, parent_origin: (f32, f32)) -> AnyElement {
         let mut el = div();
+
+        let node_origin = node
+            .bounds
+            .as_ref()
+            .and_then(|b| b.origin.as_ref())
+            .map(|o| (o.x, o.y))
+            .unwrap_or(parent_origin);
 
         if let Some(bounds) = &node.bounds {
             if let (Some(origin), Some(size)) = (&bounds.origin, &bounds.size) {
                 el = el
                     .absolute()
-                    .left(px(origin.x))
-                    .top(px(origin.y))
+                    .left(px(origin.x - parent_origin.0))
+                    .top(px(origin.y - parent_origin.1))
                     .w(px(size.width))
                     .h(px(size.height));
             }
@@ -102,17 +114,10 @@ impl RemoteView {
         let node_id = node.id.as_ref().map(|id| id.id).unwrap_or(0);
         let element_id = node.element_id.clone();
 
-        // Attach click handler if the node is clickable.
-        if flags & InteractionFlags::CLICKABLE != 0 {
-            let conn = self.connection.clone();
-            let eid = element_id.clone();
-            el = el.on_mouse_down(MouseButton::Left, move |event, _window, _cx| {
-                let x: f32 = event.position.x.into();
-                let y: f32 = event.position.y.into();
-                conn.send_click(node_id, eid.clone(), x, y, 0, 1, DisplayModifiers::default())
-                    .ok();
-            });
-        }
+        // Mouse button events (click, mousedown, mouseup) are handled by
+        // window-level DOM listeners in lib.rs — GPUI does its own hit-testing
+        // so it needs raw window-position events for all clicks, not just
+        // nodes with CLICKABLE flags.
 
         // Attach scroll handler if the node is scrollable.
         if flags & InteractionFlags::SCROLLABLE != 0 {
@@ -134,7 +139,7 @@ impl RemoteView {
                 let children: Vec<AnyElement> = node
                     .children
                     .iter()
-                    .map(|child| self.render_node(child))
+                    .map(|child| self.render_node(child, node_origin))
                     .collect();
                 el.children(children).into_any_element()
             }
@@ -153,7 +158,7 @@ impl RemoteView {
                 let children: Vec<AnyElement> = node
                     .children
                     .iter()
-                    .map(|child| self.render_node(child))
+                    .map(|child| self.render_node(child, node_origin))
                     .collect();
                 el.children(children).into_any_element()
             }
@@ -221,7 +226,7 @@ impl Render for RemoteView {
 
         if let Some(tree) = &self.tree {
             if let Some(root_node) = &tree.root {
-                root.child(self.render_node(root_node))
+                root.child(self.render_node(root_node, (0.0, 0.0)))
             } else {
                 root
             }
