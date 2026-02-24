@@ -125,9 +125,12 @@ fn main() -> Result<()> {
         workspace::init(app_state.clone(), cx);
 
         // ── 12b. Load default keybindings ───────────────────────────────
+        // Use allow_partial_failure because the server doesn't register every
+        // action (debugger, search panels, etc.) — we still want the editor
+        // bindings that do resolve.
         {
-            use settings::{DEFAULT_KEYMAP_PATH, KeymapFile, KeybindSource};
-            match KeymapFile::load_asset(DEFAULT_KEYMAP_PATH, Some(KeybindSource::Default), cx) {
+            use settings::{DEFAULT_KEYMAP_PATH, KeymapFile};
+            match KeymapFile::load_asset_allow_partial_failure(DEFAULT_KEYMAP_PATH, cx) {
                 Ok(bindings) => {
                     info!("loaded {} default keybindings from {}", bindings.len(), DEFAULT_KEYMAP_PATH);
                     cx.bind_keys(bindings);
@@ -551,8 +554,15 @@ fn action_to_platform_input(
                 log::debug!("[server keydown] skipping modifier-only key {:?}", kd.key);
                 return vec![];
             }
-            let key_char = if gpui_key.chars().count() == 1 && !modifiers.control && !modifiers.platform {
-                Some(gpui_key.clone())
+            // key_char should be the actual character produced by the key press.
+            // For single-char keys, use the original DOM key value (preserves case
+            // from shift, e.g. "H" for Shift+H) rather than the lowercased gpui_key.
+            let dom_key = &kd.key;
+            let key_char = if dom_key.chars().count() == 1
+                && !modifiers.control
+                && !modifiers.platform
+            {
+                Some(dom_key.clone())
             } else {
                 None
             };

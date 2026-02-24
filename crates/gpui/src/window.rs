@@ -4106,6 +4106,23 @@ impl Window {
             self.reset_cursor_style(cx);
         }
 
+        #[cfg(any(target_arch = "wasm32", feature = "headless-web"))]
+        if event.is::<crate::MouseDownEvent>() {
+            let pos = self.mouse_position();
+            let num_listeners = self.rendered_frame.mouse_listeners.len();
+            let bounds = self.bounds();
+            log::info!(
+                "[gpui mouse_down] pos=({:.1}, {:.1}) window_bounds=({:.0}x{:.0}) focus_before={:?} mouse_listeners={} hitboxes={}",
+                pos.x.0,
+                pos.y.0,
+                bounds.size.width.0,
+                bounds.size.height.0,
+                self.focus,
+                num_listeners,
+                self.rendered_frame.hitboxes.len(),
+            );
+        }
+
         #[cfg(any(feature = "inspector", debug_assertions))]
         if self.is_inspector_picking(cx) {
             self.handle_inspector_mouse_event(event, cx);
@@ -4138,6 +4155,15 @@ impl Window {
 
         self.rendered_frame.mouse_listeners = mouse_listeners;
 
+        #[cfg(any(target_arch = "wasm32", feature = "headless-web"))]
+        if event.is::<crate::MouseDownEvent>() {
+            log::debug!(
+                "[gpui mouse_down] focus_after={:?} propagated={}",
+                self.focus,
+                cx.propagate_event,
+            );
+        }
+
         if cx.has_active_drag() {
             if event.is::<MouseMoveEvent>() {
                 // If this was a mouse move event, redraw the window so that the
@@ -4159,6 +4185,28 @@ impl Window {
 
         let node_id = self.focus_node_id_in_rendered_frame(self.focus);
         let dispatch_path = self.rendered_frame.dispatch_tree.dispatch_path(node_id);
+
+        #[cfg(any(target_arch = "wasm32", feature = "headless-web"))]
+        if let Some(key_down) = event.downcast_ref::<KeyDownEvent>() {
+            let contexts: Vec<String> = dispatch_path
+                .iter()
+                .filter_map(|id| {
+                    self.rendered_frame
+                        .dispatch_tree
+                        .node(*id)
+                        .context
+                        .as_ref()
+                        .map(|ctx| format!("{:?}", ctx))
+                })
+                .collect();
+            log::debug!(
+                "[gpui dispatch_key_event] focus={:?} dispatch_path_len={} contexts={:?} key={:?}",
+                self.focus,
+                dispatch_path.len(),
+                contexts,
+                key_down.keystroke.key,
+            );
+        }
 
         let mut keystroke: Option<Keystroke> = None;
 
