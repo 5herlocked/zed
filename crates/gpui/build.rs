@@ -180,8 +180,6 @@ mod macos {
 
         let output = Command::new("xcrun")
             .args([
-                "-sdk",
-                "macosx",
                 "metal",
                 "-gline-tables-only",
                 "-mmacosx-version-min=10.15.7",
@@ -205,7 +203,7 @@ mod macos {
         }
 
         let output = Command::new("xcrun")
-            .args(["-sdk", "macosx", "metallib"])
+            .args(["metallib"])
             .arg(air_output_path)
             .arg("-o")
             .arg(metallib_output_path)
