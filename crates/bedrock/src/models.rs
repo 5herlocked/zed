@@ -46,51 +46,54 @@ pub struct BedrockModelCacheConfiguration {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, EnumIter)]
 pub enum Model {
     // Anthropic Claude 4+ models
-    #[serde(rename = "claude-haiku-4-5", alias = "claude-haiku-4-5-latest")]
-    ClaudeHaiku4_5,
-    #[serde(rename = "claude-sonnet-4", alias = "claude-sonnet-4-latest")]
-    ClaudeSonnet4,
     #[serde(
-        rename = "claude-sonnet-4-thinking",
+        rename = "claude-haiku-4-5",
+        alias = "claude-haiku-4-5-latest"
+    )]
+    ClaudeHaiku4_5,
+    #[serde(
+        rename = "claude-sonnet-4",
+        alias = "claude-sonnet-4-latest",
+        alias = "claude-sonnet-4-thinking",
         alias = "claude-sonnet-4-thinking-latest"
     )]
-    ClaudeSonnet4Thinking,
+    ClaudeSonnet4,
     #[default]
-    #[serde(rename = "claude-sonnet-4-5", alias = "claude-sonnet-4-5-latest")]
-    ClaudeSonnet4_5,
     #[serde(
-        rename = "claude-sonnet-4-5-thinking",
+        rename = "claude-sonnet-4-5",
+        alias = "claude-sonnet-4-5-latest",
+        alias = "claude-sonnet-4-5-thinking",
         alias = "claude-sonnet-4-5-thinking-latest"
     )]
-    ClaudeSonnet4_5Thinking,
-    #[serde(rename = "claude-opus-4-1", alias = "claude-opus-4-1-latest")]
-    ClaudeOpus4_1,
+    ClaudeSonnet4_5,
     #[serde(
-        rename = "claude-opus-4-1-thinking",
+        rename = "claude-opus-4-1",
+        alias = "claude-opus-4-1-latest",
+        alias = "claude-opus-4-1-thinking",
         alias = "claude-opus-4-1-thinking-latest"
     )]
-    ClaudeOpus4_1Thinking,
-    #[serde(rename = "claude-opus-4-5", alias = "claude-opus-4-5-latest")]
-    ClaudeOpus4_5,
+    ClaudeOpus4_1,
     #[serde(
-        rename = "claude-opus-4-5-thinking",
+        rename = "claude-opus-4-5",
+        alias = "claude-opus-4-5-latest",
+        alias = "claude-opus-4-5-thinking",
         alias = "claude-opus-4-5-thinking-latest"
     )]
-    ClaudeOpus4_5Thinking,
-    #[serde(rename = "claude-opus-4-6", alias = "claude-opus-4-6-latest")]
-    ClaudeOpus4_6,
+    ClaudeOpus4_5,
     #[serde(
-        rename = "claude-opus-4-6-thinking",
+        rename = "claude-opus-4-6",
+        alias = "claude-opus-4-6-latest",
+        alias = "claude-opus-4-6-thinking",
         alias = "claude-opus-4-6-thinking-latest"
     )]
-    ClaudeOpus4_6Thinking,
-    #[serde(rename = "claude-sonnet-4-6", alias = "claude-sonnet-4-6-latest")]
-    ClaudeSonnet4_6,
+    ClaudeOpus4_6,
     #[serde(
-        rename = "claude-sonnet-4-6-thinking",
+        rename = "claude-sonnet-4-6",
+        alias = "claude-sonnet-4-6-latest",
+        alias = "claude-sonnet-4-6-thinking",
         alias = "claude-sonnet-4-6-thinking-latest"
     )]
-    ClaudeSonnet4_6Thinking,
+    ClaudeSonnet4_6,
 
     // Meta Llama 4 models
     #[serde(rename = "llama-4-scout-17b")]
@@ -181,29 +184,25 @@ impl Model {
     }
 
     pub fn from_id(id: &str) -> anyhow::Result<Self> {
-        if id.starts_with("claude-opus-4-6-thinking") {
-            Ok(Self::ClaudeOpus4_6Thinking)
-        } else if id.starts_with("claude-opus-4-6") {
+        // Order matters: longer prefixes must be checked first to avoid
+        // "claude-opus-4-6" matching before "claude-opus-4-6-thinking".
+        // The "-thinking" aliases map to the same model since thinking
+        // is now controlled by the UI toggle.
+        if id.starts_with("claude-opus-4-6-thinking") || id.starts_with("claude-opus-4-6") {
             Ok(Self::ClaudeOpus4_6)
-        } else if id.starts_with("claude-opus-4-5-thinking") {
-            Ok(Self::ClaudeOpus4_5Thinking)
-        } else if id.starts_with("claude-opus-4-5") {
+        } else if id.starts_with("claude-opus-4-5-thinking") || id.starts_with("claude-opus-4-5") {
             Ok(Self::ClaudeOpus4_5)
-        } else if id.starts_with("claude-opus-4-1-thinking") {
-            Ok(Self::ClaudeOpus4_1Thinking)
-        } else if id.starts_with("claude-opus-4-1") {
+        } else if id.starts_with("claude-opus-4-1-thinking") || id.starts_with("claude-opus-4-1") {
             Ok(Self::ClaudeOpus4_1)
-        } else if id.starts_with("claude-sonnet-4-6-thinking") {
-            Ok(Self::ClaudeSonnet4_6Thinking)
-        } else if id.starts_with("claude-sonnet-4-6") {
+        } else if id.starts_with("claude-sonnet-4-6-thinking")
+            || id.starts_with("claude-sonnet-4-6")
+        {
             Ok(Self::ClaudeSonnet4_6)
-        } else if id.starts_with("claude-sonnet-4-5-thinking") {
-            Ok(Self::ClaudeSonnet4_5Thinking)
-        } else if id.starts_with("claude-sonnet-4-5") {
+        } else if id.starts_with("claude-sonnet-4-5-thinking")
+            || id.starts_with("claude-sonnet-4-5")
+        {
             Ok(Self::ClaudeSonnet4_5)
-        } else if id.starts_with("claude-sonnet-4-thinking") {
-            Ok(Self::ClaudeSonnet4Thinking)
-        } else if id.starts_with("claude-sonnet-4") {
+        } else if id.starts_with("claude-sonnet-4-thinking") || id.starts_with("claude-sonnet-4") {
             Ok(Self::ClaudeSonnet4)
         } else if id.starts_with("claude-haiku-4-5") {
             Ok(Self::ClaudeHaiku4_5)
@@ -216,17 +215,11 @@ impl Model {
         match self {
             Self::ClaudeHaiku4_5 => "claude-haiku-4-5",
             Self::ClaudeSonnet4 => "claude-sonnet-4",
-            Self::ClaudeSonnet4Thinking => "claude-sonnet-4-thinking",
             Self::ClaudeSonnet4_5 => "claude-sonnet-4-5",
-            Self::ClaudeSonnet4_5Thinking => "claude-sonnet-4-5-thinking",
             Self::ClaudeOpus4_1 => "claude-opus-4-1",
-            Self::ClaudeOpus4_1Thinking => "claude-opus-4-1-thinking",
             Self::ClaudeOpus4_5 => "claude-opus-4-5",
-            Self::ClaudeOpus4_5Thinking => "claude-opus-4-5-thinking",
             Self::ClaudeOpus4_6 => "claude-opus-4-6",
-            Self::ClaudeOpus4_6Thinking => "claude-opus-4-6-thinking",
             Self::ClaudeSonnet4_6 => "claude-sonnet-4-6",
-            Self::ClaudeSonnet4_6Thinking => "claude-sonnet-4-6-thinking",
             Self::Llama4Scout17B => "llama-4-scout-17b",
             Self::Llama4Maverick17B => "llama-4-maverick-17b",
             Self::Gemma3_4B => "gemma-3-4b",
@@ -261,20 +254,12 @@ impl Model {
     pub fn request_id(&self) -> &str {
         match self {
             Self::ClaudeHaiku4_5 => "anthropic.claude-haiku-4-5-20251001-v1:0",
-            Self::ClaudeSonnet4 | Self::ClaudeSonnet4Thinking => {
-                "anthropic.claude-sonnet-4-20250514-v1:0"
-            }
-            Self::ClaudeSonnet4_5 | Self::ClaudeSonnet4_5Thinking => {
-                "anthropic.claude-sonnet-4-5-20250929-v1:0"
-            }
-            Self::ClaudeOpus4_1 | Self::ClaudeOpus4_1Thinking => {
-                "anthropic.claude-opus-4-1-20250805-v1:0"
-            }
-            Self::ClaudeOpus4_5 | Self::ClaudeOpus4_5Thinking => {
-                "anthropic.claude-opus-4-5-20251101-v1:0"
-            }
-            Self::ClaudeOpus4_6 | Self::ClaudeOpus4_6Thinking => "anthropic.claude-opus-4-6-v1",
-            Self::ClaudeSonnet4_6 | Self::ClaudeSonnet4_6Thinking => "anthropic.claude-sonnet-4-6",
+            Self::ClaudeSonnet4 => "anthropic.claude-sonnet-4-20250514-v1:0",
+            Self::ClaudeSonnet4_5 => "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            Self::ClaudeOpus4_1 => "anthropic.claude-opus-4-1-20250805-v1:0",
+            Self::ClaudeOpus4_5 => "anthropic.claude-opus-4-5-20251101-v1:0",
+            Self::ClaudeOpus4_6 => "anthropic.claude-opus-4-6-v1",
+            Self::ClaudeSonnet4_6 => "anthropic.claude-sonnet-4-6",
             Self::Llama4Scout17B => "meta.llama4-scout-17b-instruct-v1:0",
             Self::Llama4Maverick17B => "meta.llama4-maverick-17b-instruct-v1:0",
             Self::Gemma3_4B => "google.gemma-3-4b-it",
@@ -310,17 +295,11 @@ impl Model {
         match self {
             Self::ClaudeHaiku4_5 => "Claude Haiku 4.5",
             Self::ClaudeSonnet4 => "Claude Sonnet 4",
-            Self::ClaudeSonnet4Thinking => "Claude Sonnet 4 Thinking",
             Self::ClaudeSonnet4_5 => "Claude Sonnet 4.5",
-            Self::ClaudeSonnet4_5Thinking => "Claude Sonnet 4.5 Thinking",
             Self::ClaudeOpus4_1 => "Claude Opus 4.1",
-            Self::ClaudeOpus4_1Thinking => "Claude Opus 4.1 Thinking",
             Self::ClaudeOpus4_5 => "Claude Opus 4.5",
-            Self::ClaudeOpus4_5Thinking => "Claude Opus 4.5 Thinking",
             Self::ClaudeOpus4_6 => "Claude Opus 4.6",
-            Self::ClaudeOpus4_6Thinking => "Claude Opus 4.6 Thinking",
             Self::ClaudeSonnet4_6 => "Claude Sonnet 4.6",
-            Self::ClaudeSonnet4_6Thinking => "Claude Sonnet 4.6 Thinking",
             Self::Llama4Scout17B => "Llama 4 Scout 17B",
             Self::Llama4Maverick17B => "Llama 4 Maverick 17B",
             Self::Gemma3_4B => "Gemma 3 4B",
