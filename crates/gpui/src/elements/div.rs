@@ -15,6 +15,10 @@
 //! and Tailwind-like styling that you can use to build your own custom elements. Div is
 //! constructed by combining these two systems into an all-in-one element.
 
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::ResultExt;
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::StackSafe;
 use crate::{
     AbsoluteLength, Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Bounds, ClickEvent,
     DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global, GlobalElementId,
@@ -28,7 +32,8 @@ use crate::{
 use collections::HashMap;
 use refineable::Refineable;
 use smallvec::SmallVec;
-use stacksafe::{StackSafe, stacksafe};
+#[cfg(not(target_arch = "wasm32"))]
+use stacksafe::StackSafe;
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
@@ -42,8 +47,6 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use util::ResultExt;
-#[cfg(target_arch = "wasm32")]
-use crate::wasm_shims::ResultExt;
 
 use super::ImageCacheProvider;
 
@@ -1429,7 +1432,7 @@ impl Element for Div {
         self.interactivity.source_location()
     }
 
-    #[stacksafe]
+    #[cfg_attr(not(target_arch = "wasm32"), stacksafe::stacksafe)]
     fn request_layout(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -1465,7 +1468,7 @@ impl Element for Div {
         (layout_id, DivFrameState { child_layout_ids })
     }
 
-    #[stacksafe]
+    #[cfg_attr(not(target_arch = "wasm32"), stacksafe::stacksafe)]
     fn prepaint(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -1560,7 +1563,7 @@ impl Element for Div {
         )
     }
 
-    #[stacksafe]
+    #[cfg_attr(not(target_arch = "wasm32"), stacksafe::stacksafe)]
     fn paint(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -1831,12 +1834,10 @@ impl Interactivity {
                                 if let Some(builder) = window.display_tree_builder.as_mut() {
                                     let display_style = DisplayStyle::from_gpui_style(&style);
                                     let flags = InteractionFlags::from_interactivity(self);
-                                    let element_id_str =
-                                        global_id.map(|id| id.to_string());
+                                    let element_id_str = global_id.map(|id| id.to_string());
                                     let scroll_pt =
                                         self.scroll_offset.as_ref().map(|rc| *rc.borrow());
-                                    let group_name =
-                                        self.group.as_ref().map(|s| s.to_string());
+                                    let group_name = self.group.as_ref().map(|s| s.to_string());
                                     builder.push_container(
                                         element_id_str,
                                         display_style,

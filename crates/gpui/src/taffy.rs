@@ -1,9 +1,12 @@
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_shims::StackSafe;
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Edges, Length, Pixels, Point, Size, Style, Window,
     point, size,
 };
 use collections::{FxHashMap, FxHashSet};
-use stacksafe::{StackSafe, stacksafe};
+#[cfg(not(target_arch = "wasm32"))]
+use stacksafe::StackSafe;
 use std::{fmt::Debug, ops::Range};
 use taffy::{
     TaffyTree, TraversePartialTree as _,
@@ -150,7 +153,7 @@ impl TaffyLayoutEngine {
         Ok(edges)
     }
 
-    #[stacksafe]
+    #[cfg_attr(not(target_arch = "wasm32"), stacksafe::stacksafe)]
     pub fn compute_layout(
         &mut self,
         id: LayoutId,

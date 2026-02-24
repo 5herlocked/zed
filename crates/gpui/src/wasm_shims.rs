@@ -375,6 +375,41 @@ impl Priority {
     }
 }
 
+// --- stacksafe shims ---
+// On wasm32 the stack is managed by the runtime and stack overflow is not a concern
+// in the same way as on native, so StackSafe and the #[stacksafe] attribute are no-ops.
+
+/// A transparent wrapper standing in for `stacksafe::StackSafe<T>` on wasm32.
+/// On native targets this type is provided by the `stacksafe` crate and ensures
+/// deeply recursive calls get a fresh stack segment. On wasm32 we just forward
+/// through to the inner value.
+#[repr(transparent)]
+pub struct StackSafe<T>(pub T);
+
+impl<T> StackSafe<T> {
+    pub fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> std::ops::Deref for StackSafe<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for StackSafe<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Metadata attached to each runnable task.
 pub struct RunnableMeta {
     /// The source location where the task was spawned.
