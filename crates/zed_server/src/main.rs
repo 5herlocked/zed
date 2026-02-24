@@ -6,12 +6,13 @@ use futures::{SinkExt, TryStreamExt};
 use git::GitHostingProviderRegistry;
 use gpui::display_tree::{display_action_kind, wire_frame, DisplayTree, WireFrame};
 use gpui::{
-    AppContext as _, Application, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
+    App, AppContext as _, Application, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta,
     ScrollWheelEvent, StreamingConfig, TouchPhase, px,
 };
 use language::LanguageRegistry;
 use log::{error, info};
+use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -57,6 +58,8 @@ fn main() -> Result<()> {
 
     app.run(move |cx| {
         // ── 1. Core infrastructure ──────────────────────────────────────
+        menu::init();
+        zed_actions::init();
         release_channel::init(semver::Version::new(0, 1, 0), cx);
         gpui_tokio::init(cx);
         settings::init(cx);
@@ -77,16 +80,17 @@ fn main() -> Result<()> {
         GitHostingProviderRegistry::default_global(cx);
         git_hosting_providers::init(cx);
 
-        // ── 5. Client (disconnected -- no auth, just satisfies AppState) ─
+        // ── 5. Client ───────────────────────────────────────────────────
         let client = client::Client::production(cx);
+        cx.set_http_client(client.http_client());
         client::Client::set_global(client.clone(), cx);
 
-        // ── 6. Language registry (empty -- no built-in languages) ────────
+        // ── 6. Language registry ────────────────────────────────────────
         let mut languages = LanguageRegistry::new(cx.background_executor().clone());
         languages.set_language_server_download_dir(paths::languages_dir().clone());
         let languages = Arc::new(languages);
 
-        // ── 7. Node runtime (minimal, no shell env) ─────────────────────
+        // ── 7. Node runtime ─────────────────────────────────────────────
         let (_, node_options_rx) = watch::channel(None);
         let node_runtime = node_runtime::NodeRuntime::new(
             client.http_client().clone(),
@@ -94,40 +98,89 @@ fn main() -> Result<()> {
             node_options_rx,
         );
 
-        // ── 8. Entity stores ────────────────────────────────────────────
+        // ── 8. Languages (built-in grammars + LSP) ──────────────────────
+        languages::init(languages.clone(), fs.clone(), node_runtime.clone(), cx);
+
+        // ── 9. Entity stores ────────────────────────────────────────────
         let user_store = cx.new(|cx| client::UserStore::new(client.clone(), cx));
         let workspace_store = cx.new(|cx| workspace::WorkspaceStore::new(client.clone(), cx));
 
-        // ── 9. Session (test mode -- no SQLite DB needed) ───────────────
+        // ── 10. Session ─────────────────────────────────────────────────
         let session = session::Session::test();
         let app_session = cx.new(|cx| session::AppSession::new(session, cx));
 
-        // ── 10. AppState ────────────────────────────────────────────────
+        // ── 11. AppState ────────────────────────────────────────────────
         let app_state = Arc::new(AppState {
-            languages,
+            languages: languages.clone(),
             client: client.clone(),
-            user_store,
+            user_store: user_store.clone(),
             fs: fs.clone(),
             build_window_options: |_, _| gpui::WindowOptions::default(),
-            workspace_store,
-            node_runtime,
+            workspace_store: workspace_store.clone(),
+            node_runtime: node_runtime.clone(),
             session: app_session,
         });
         AppState::set_global(Arc::downgrade(&app_state), cx);
 
-        // ── 11. Theme (base only -- no embedded assets) ─────────────────
-        theme::init(theme::LoadThemes::JustBase, cx);
+        // ── 12. Theme (full, with embedded assets) ──────────────────────
+        theme::init(theme::LoadThemes::All(Box::new(assets::Assets)), cx);
 
-        // ── 12. Core crate init (order matters) ─────────────────────────
+        // ── 13. Fonts ───────────────────────────────────────────────────
+        load_embedded_fonts(cx);
+
+        // ── 14. Core crate init (order from Zed main) ───────────────────
         project::Project::init(&client, cx);
         client::init(&client, cx);
+
         editor::init(cx);
+        image_viewer::init(cx);
+        diagnostics::init(cx);
+
+        audio::init(cx);
         workspace::init(app_state.clone(), cx);
 
-        // ── 12b. Load default keybindings ───────────────────────────────
-        // Use allow_partial_failure because the server doesn't register every
-        // action (debugger, search panels, etc.) — we still want the editor
-        // bindings that do resolve.
+        // ── 15. UI components ───────────────────────────────────────────
+        command_palette::init(cx);
+        go_to_line::init(cx);
+        file_finder::init(cx);
+        tab_switcher::init(cx);
+        outline::init(cx);
+        project_symbols::init(cx);
+        project_panel::init(cx);
+        outline_panel::init(cx);
+        tasks_ui::init(cx);
+        snippet_provider::init(cx);
+        snippets_ui::init(cx);
+        channel::init(&client.clone(), user_store.clone(), cx);
+        search::init(cx);
+        vim::init(cx);
+        terminal_view::init(cx);
+        encoding_selector::init(cx);
+        language_selector::init(cx);
+        line_ending_selector::init(cx);
+        theme_selector::init(cx);
+        language_tools::init(cx);
+        call::init(client.clone(), user_store.clone(), cx);
+        notifications::init(client.clone(), user_store.clone(), cx);
+        collab_ui::init(&app_state, cx);
+        git_ui::init(cx);
+        feedback::init(cx);
+        markdown_preview::init(cx);
+        extensions_ui::init(cx);
+        recent_projects::init(cx);
+
+        // ── 16. Search bar integration ──────────────────────────────────
+        cx.set_global(workspace::PaneSearchBarCallbacks {
+            setup_search_bar: |languages, toolbar, window, cx| {
+                let search_bar = cx.new(|cx| search::BufferSearchBar::new(languages, window, cx));
+                toolbar.update(cx, |toolbar, cx| {
+                    toolbar.add_item(search_bar, window, cx);
+                });
+            },
+            wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
+        });
+
+        // ── 17. Load default keybindings ────────────────────────────────
         {
             use settings::{DEFAULT_KEYMAP_PATH, KeymapFile};
             match KeymapFile::load_asset_allow_partial_failure(DEFAULT_KEYMAP_PATH, cx) {
@@ -139,7 +192,7 @@ fn main() -> Result<()> {
             }
         }
 
-        // ── 13. Open an empty workspace ─────────────────────────────────
+        // ── 18. Open an empty workspace ─────────────────────────────────
         workspace::open_new(
             Default::default(),
             app_state.clone(),
@@ -148,7 +201,7 @@ fn main() -> Result<()> {
         )
         .detach();
 
-        // ── 14. Frame bridge + WebSocket server ─────────────────────────
+        // ── 19. Frame bridge + WebSocket server ─────────────────────────
         let tokio = gpui_tokio::Tokio::handle(cx).clone();
         tokio.spawn(frame_bridge(frame_rx, frame_watch_tx));
 
@@ -359,6 +412,29 @@ async fn handle_client(
 
 /// Map DOM `KeyboardEvent.key` values to GPUI's lowercase key names.
 /// Returns empty string for modifier-only keys that shouldn't generate events.
+fn load_embedded_fonts(cx: &App) {
+    let asset_source = cx.asset_source();
+    let font_paths = asset_source.list("fonts").unwrap();
+    let embedded_fonts = Mutex::new(Vec::new());
+    let executor = cx.background_executor();
+
+    cx.foreground_executor().block_on(executor.scoped(|scope| {
+        for font_path in &font_paths {
+            if !font_path.ends_with(".ttf") {
+                continue;
+            }
+            scope.spawn(async {
+                let font_bytes = asset_source.load(font_path).unwrap().unwrap();
+                embedded_fonts.lock().push(font_bytes);
+            });
+        }
+    }));
+
+    cx.text_system()
+        .add_fonts(embedded_fonts.into_inner())
+        .unwrap();
+}
+
 fn dom_key_to_gpui(dom_key: &str) -> String {
     match dom_key {
         // Modifier-only keys — no standalone event needed
