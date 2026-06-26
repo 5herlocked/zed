@@ -5,11 +5,12 @@ use settings::RegisterSetting;
 
 use crate::provider::{
     anthropic, anthropic::AnthropicSettings, anthropic_compatible::AnthropicCompatibleSettings,
-    bedrock, bedrock::AmazonBedrockSettings, cloud::ZedDotDevSettings, deepseek::DeepSeekSettings,
-    google::GoogleSettings, lmstudio::LmStudioSettings, mistral, mistral::MistralSettings,
-    ollama::OllamaSettings, open_ai::OpenAiSettings, open_ai_compatible::OpenAiCompatibleSettings,
-    open_router, open_router::OpenRouterSettings, opencode, opencode::OpenCodeSettings,
-    resolve_custom_headers, vercel_ai_gateway::VercelAiGatewaySettings, x_ai::XAiSettings,
+    bedrock, bedrock::AmazonBedrockSettings, bedrock_gpt::BedrockGptSettings,
+    cloud::ZedDotDevSettings, deepseek::DeepSeekSettings, google::GoogleSettings,
+    lmstudio::LmStudioSettings, mistral, mistral::MistralSettings, ollama::OllamaSettings,
+    open_ai::OpenAiSettings, open_ai_compatible::OpenAiCompatibleSettings, open_router,
+    open_router::OpenRouterSettings, opencode, opencode::OpenCodeSettings, resolve_custom_headers,
+    vercel_ai_gateway::VercelAiGatewaySettings, x_ai::XAiSettings,
 };
 
 #[derive(Debug, RegisterSetting)]
@@ -17,6 +18,7 @@ pub struct AllLanguageModelSettings {
     pub anthropic: AnthropicSettings,
     pub anthropic_compatible: HashMap<Arc<str>, AnthropicCompatibleSettings>,
     pub bedrock: AmazonBedrockSettings,
+    pub bedrock_gpt: BedrockGptSettings,
     pub deepseek: DeepSeekSettings,
     pub google: GoogleSettings,
     pub lmstudio: LmStudioSettings,
@@ -50,6 +52,7 @@ impl settings::Settings for AllLanguageModelSettings {
         let anthropic = language_models.anthropic.unwrap();
         let anthropic_compatible = language_models.anthropic_compatible.unwrap();
         let bedrock = language_models.bedrock.unwrap();
+        let bedrock_gpt = language_models.bedrock_gpt.unwrap();
         let deepseek = language_models.deepseek.unwrap();
         let google = language_models.google.unwrap();
         let lmstudio = language_models.lmstudio.unwrap();
@@ -105,6 +108,16 @@ impl settings::Settings for AllLanguageModelSettings {
                 allow_global: bedrock.allow_global,
                 guardrail_identifier: bedrock.guardrail_identifier,
                 guardrail_version: bedrock.guardrail_version,
+            },
+            bedrock_gpt: BedrockGptSettings {
+                api_url: bedrock_gpt.api_url,
+                region: bedrock_gpt.region,
+                available_models: bedrock_gpt.available_models.unwrap_or_default(),
+                custom_headers: custom_headers_from(
+                    "Amazon Bedrock GPT",
+                    bedrock_gpt.custom_headers,
+                    &[],
+                ),
             },
             deepseek: DeepSeekSettings {
                 api_url: deepseek.api_url.unwrap(),

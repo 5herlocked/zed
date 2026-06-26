@@ -2411,6 +2411,7 @@
     },
     "anthropic_compatible": {},
     "bedrock": {},
+    "bedrock_gpt": {},
     "google": {
       "api_url": "https://generativelanguage.googleapis.com",
     },

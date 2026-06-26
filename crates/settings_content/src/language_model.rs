@@ -13,6 +13,7 @@ pub struct AllLanguageModelSettingsContent {
     pub anthropic: Option<AnthropicSettingsContent>,
     pub anthropic_compatible: Option<HashMap<Arc<str>, AnthropicCompatibleSettingsContent>>,
     pub bedrock: Option<AmazonBedrockSettingsContent>,
+    pub bedrock_gpt: Option<BedrockGptSettingsContent>,
     pub deepseek: Option<DeepseekSettingsContent>,
     pub google: Option<GoogleSettingsContent>,
     pub lmstudio: Option<LmStudioSettingsContent>,
@@ -135,6 +136,15 @@ pub struct BedrockAvailableModel {
     #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
     pub default_temperature: Option<f32>,
     pub mode: Option<ModelMode>,
+}
+
+#[with_fallible_options]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct BedrockGptSettingsContent {
+    pub api_url: Option<String>,
+    pub region: Option<String>,
+    pub available_models: Option<Vec<OpenAiAvailableModel>>,
+    pub custom_headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
