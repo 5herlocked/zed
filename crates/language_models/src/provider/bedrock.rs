@@ -656,15 +656,20 @@ impl State {
                     state.get_region(),
                 )
             });
-            let client = build_control_plane_client(
-                http_client,
-                request_auth,
-                profile_name,
-                endpoint,
-                region,
-            )
-            .await;
-            Ok(bedrock::list_inference_profiles(client).await?)
+            // The AWS SDK drives its timers and IO on Tokio, so build the
+            // client and send the request there, like `stream_bedrock_request`.
+            let task = Tokio::spawn_result(cx, async move {
+                let client = build_control_plane_client(
+                    http_client,
+                    request_auth,
+                    profile_name,
+                    endpoint,
+                    region,
+                )
+                .await;
+                Ok(bedrock::list_inference_profiles(client).await?)
+            });
+            task.await
         })
     }
 
@@ -3529,6 +3534,31 @@ mod tests {
             config,
             BedrockModelConfig::Converse(ConverseModel::Custom { .. })
         ));
+    }
+
+    #[gpui::test]
+    async fn review_discovery_returns_transport_result_on_foreground(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let provider = test_provider(cx);
+        provider.state.update(cx, |state, _| {
+            state.set_auth(Some(BedrockAuth::ApiKey {
+                api_key: "dummy".into(),
+            }));
+        });
+
+        // Building the control-plane client and calling ListInferenceProfiles
+        // must happen on Tokio; on the foreground executor the AWS SDK panics
+        // with "there is no reactor running". The fake client answers 404, so
+        // discovery must come back as an ordinary error without contacting AWS.
+        let result = provider
+            .state
+            .update(cx, |state, cx| state.fetch_models(cx))
+            .await;
+        assert!(
+            result.is_err(),
+            "a 404 from the control plane should surface as an error, not a panic"
+        );
     }
 
     #[test]
