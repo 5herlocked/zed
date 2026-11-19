@@ -1,6 +1,7 @@
 mod models;
 
 use anyhow::{Result, anyhow};
+pub use aws_sdk_bedrock as bedrock_control_client;
 use aws_sdk_bedrockruntime as bedrock;
 pub use aws_sdk_bedrockruntime as bedrock_client;
 pub use aws_sdk_bedrockruntime::types::{
@@ -31,6 +32,86 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub use crate::models::*;
+
+/// An inference profile available in a region, from the Bedrock control
+/// plane (`ListInferenceProfiles`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InferenceProfile {
+    /// The id to pass as `modelId` in Converse requests, e.g.
+    /// `us.anthropic.claude-sonnet-4-5-20250929-v1:0` or
+    /// `global.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+    pub id: String,
+    /// Human-readable profile name.
+    pub name: String,
+    /// Ids of the foundation models this profile routes to, parsed from the
+    /// model ARNs (e.g. `anthropic.claude-sonnet-4-5-20250929-v1:0`).
+    pub model_ids: Vec<String>,
+}
+
+/// The model or inference profile id from the resource segment of an ARN,
+/// e.g. `anthropic.claude-sonnet-4-5-20250929-v1:0` from
+/// `arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0`.
+fn arn_resource_id(arn: &str) -> String {
+    arn.rsplit('/').next().unwrap_or(arn).to_string()
+}
+
+/// Lists every inference profile (system-defined and application) usable from
+/// the client's region, following pagination.
+pub async fn list_inference_profiles(
+    client: bedrock_control_client::Client,
+) -> Result<Vec<InferenceProfile>, BedrockError> {
+    use aws_sdk_bedrock::operation::list_inference_profiles::ListInferenceProfilesError;
+
+    let mut profiles = Vec::new();
+    let mut next_token: Option<String> = None;
+    loop {
+        let mut request = client.list_inference_profiles();
+        if let Some(next_token) = next_token {
+            request = request.next_token(next_token);
+        }
+        let response = request.send().await.map_err(|err| match err {
+            aws_sdk_bedrock::error::SdkError::ServiceError(ctx) => {
+                let err = ctx.into_err();
+                match &err {
+                    ListInferenceProfilesError::AccessDeniedException(e) => {
+                        BedrockError::AccessDenied(
+                            e.message().unwrap_or("access denied").to_string(),
+                        )
+                    }
+                    ListInferenceProfilesError::ThrottlingException(_) => BedrockError::RateLimited,
+                    ListInferenceProfilesError::InternalServerException(e) => {
+                        BedrockError::InternalServer(
+                            e.message().unwrap_or("internal server error").to_string(),
+                        )
+                    }
+                    ListInferenceProfilesError::ValidationException(e) => BedrockError::Validation(
+                        e.message().unwrap_or("validation error").to_string(),
+                    ),
+                    _ => BedrockError::Other(err.into()),
+                }
+            }
+            other => BedrockError::Other(other.into()),
+        })?;
+
+        for summary in response.inference_profile_summaries() {
+            profiles.push(InferenceProfile {
+                id: summary.inference_profile_id().to_string(),
+                name: summary.inference_profile_name().to_string(),
+                model_ids: summary
+                    .models()
+                    .iter()
+                    .filter_map(|model| model.model_arn().map(arn_resource_id))
+                    .collect(),
+            });
+        }
+
+        next_token = response.next_token().map(str::to_string);
+        if next_token.is_none() {
+            break;
+        }
+    }
+    Ok(profiles)
+}
 
 pub async fn stream_completion(
     client: bedrock::Client,
@@ -327,6 +408,22 @@ pub enum BedrockError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arn_resource_id_parses_model_arns() {
+        assert_eq!(
+            arn_resource_id(
+                "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0"
+            ),
+            "anthropic.claude-sonnet-4-5-20250929-v1:0"
+        );
+        assert_eq!(
+            arn_resource_id(
+                "arn:aws-us-gov:bedrock:us-gov-east-1::inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            ),
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        );
+    }
 
     fn string_field<'a>(document: &'a Document, key: &str) -> Option<&'a str> {
         match document {

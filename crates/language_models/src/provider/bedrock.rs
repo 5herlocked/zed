@@ -16,13 +16,14 @@ use bedrock::bedrock_client::types::{
     CachePointBlock, CachePointType, ContentBlockDelta, ContentBlockStart, ConverseStreamOutput,
     ReasoningContentBlockDelta, StopReason,
 };
+use bedrock::bedrock_control_client::Client as BedrockControlClient;
 use bedrock::{
     BedrockAnyToolChoice, BedrockAutoToolChoice, BedrockBlob, BedrockError, BedrockImageBlock,
     BedrockImageFormat, BedrockImageSource, BedrockInnerContent, BedrockMessage, BedrockModelMode,
     BedrockStreamingResponse, BedrockThinkingBlock, BedrockThinkingTextBlock, BedrockTool,
     BedrockToolChoice, BedrockToolConfig, BedrockToolInputSchema, BedrockToolResultBlock,
     BedrockToolResultContentBlock, BedrockToolResultStatus, BedrockToolSpec, BedrockToolUseBlock,
-    ConverseModel, MantleModel, MantleProtocol, value_to_aws_document,
+    ConverseModel, InferenceProfile, MantleModel, MantleProtocol, value_to_aws_document,
 };
 use collections::{BTreeMap, HashMap, IndexMap};
 use credentials_provider::CredentialsProvider;
@@ -87,6 +88,10 @@ pub(crate) const RESERVED_HEADER_NAMES: &[&str] = &[
     "amz-sdk-invocation-id",
     "amz-sdk-request",
 ];
+
+/// Context window assumed for models discovered through inference profiles
+/// that are not built in yet.
+const FETCHED_PROFILE_MAX_TOKENS: u64 = 200_000;
 
 /// Credentials stored in the keychain for static authentication.
 /// Region is handled separately since it's orthogonal to auth method.
@@ -385,6 +390,13 @@ pub struct State {
     /// Incremented on every auth change, so credentials resolved for earlier
     /// auth are not cached once they arrive.
     auth_generation: u64,
+    /// Inference profiles fetched from the Bedrock control plane, used to
+    /// discover newly released models and to pick the inference profile id
+    /// for the configured region at request time.
+    fetched_inference_profiles: Vec<InferenceProfile>,
+    fetch_models_task: Option<Task<()>>,
+    last_fetch_models_error: Option<String>,
+    http_client: AwsHttpClient,
     _subscription: Subscription,
 }
 
@@ -435,6 +447,8 @@ impl State {
             this.update(cx, |this, cx| {
                 this.set_auth(None);
                 this.credentials_from_env = false;
+                this.fetched_inference_profiles.clear();
+                this.last_fetch_models_error = None;
                 cx.notify();
             })
         })
@@ -459,6 +473,7 @@ impl State {
             this.update(cx, |this, cx| {
                 this.set_auth(auth);
                 this.credentials_from_env = false;
+                this.restart_fetch_models_task(cx);
                 cx.notify();
             })
         })
@@ -497,6 +512,7 @@ impl State {
                     this.update(cx, |this, cx| {
                         this.set_auth(Some(auth));
                         this.credentials_from_env = false;
+                        this.restart_fetch_models_task(cx);
                         cx.notify();
                     })?;
                     Ok(())
@@ -558,6 +574,7 @@ impl State {
                 this.update(cx, |this, cx| {
                     this.set_auth(Some(auth));
                     this.credentials_from_env = from_env;
+                    this.restart_fetch_models_task(cx);
                     cx.notify();
                 })?;
                 return Ok(());
@@ -582,6 +599,7 @@ impl State {
             this.update(cx, |this, cx| {
                 this.set_auth(Some(auth));
                 this.credentials_from_env = false;
+                this.restart_fetch_models_task(cx);
                 cx.notify();
             })?;
 
@@ -616,6 +634,77 @@ impl State {
             (s.guardrail_identifier.clone(), s.guardrail_version.clone())
         })
     }
+
+    /// Fetches the inference profiles available in the configured region from
+    /// the Bedrock control plane (`ListInferenceProfiles`), so model discovery
+    /// and cross-region routing follow what AWS actually offers instead of the
+    /// built-in tables.
+    fn fetch_models(&self, cx: &mut Context<Self>) -> Task<Result<Vec<InferenceProfile>>> {
+        let http_client = self.http_client.clone();
+        let state = cx.entity();
+        cx.spawn(async move |_this, cx| {
+            let auth_task =
+                resolve_request_auth_with_state(&state, cx, |name| std::env::var(name).ok(), {
+                    let http_client = http_client.clone();
+                    move |auth, region| resolve_request_auth(http_client, auth, region)
+                });
+            let request_auth = auth_task.await?;
+            let (profile_name, endpoint, region) = cx.read_entity(&state, |state, _cx| {
+                (
+                    aws_profile_name(&state.auth),
+                    state.settings.as_ref().and_then(|s| s.endpoint.clone()),
+                    state.get_region(),
+                )
+            });
+            let client = build_control_plane_client(
+                http_client,
+                request_auth,
+                profile_name,
+                endpoint,
+                region,
+            )
+            .await;
+            Ok(bedrock::list_inference_profiles(client).await?)
+        })
+    }
+
+    fn restart_fetch_models_task(&mut self, cx: &mut Context<Self>) {
+        let fetch_task = self.fetch_models(cx);
+        let task = cx.spawn(async move |this, cx| {
+            let result = fetch_task.await;
+            this.update(cx, |this, cx| {
+                match &result {
+                    Ok(profiles) => {
+                        this.fetched_inference_profiles = profiles.clone();
+                        this.last_fetch_models_error = None;
+                    }
+                    Err(error) => {
+                        this.last_fetch_models_error = Some(format!("{error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+            result.log_err();
+        });
+        self.fetch_models_task = Some(task);
+    }
+
+    /// The id of the fetched inference profile to route `request_id` through
+    /// in `region`, if one was fetched.
+    fn preferred_profile_id(
+        &self,
+        request_id: &str,
+        region: &str,
+        allow_global: bool,
+    ) -> Option<String> {
+        preferred_profile_id(
+            &self.fetched_inference_profiles,
+            request_id,
+            region,
+            allow_global,
+        )
+    }
 }
 
 pub struct BedrockLanguageModelProvider {
@@ -637,6 +726,7 @@ impl BedrockLanguageModelProvider {
         credentials_provider: Arc<dyn CredentialsProvider>,
         cx: &mut App,
     ) -> Self {
+        let aws_http_client = AwsHttpClient::new(http_client.clone());
         let state = cx.new(|cx| State {
             auth: None,
             settings: Some(AllLanguageModelSettings::get_global(cx).bedrock.clone()),
@@ -644,13 +734,22 @@ impl BedrockLanguageModelProvider {
             credentials_provider,
             expiring_credentials: None,
             auth_generation: 0,
-            _subscription: cx.observe_global::<SettingsStore>(|_, cx| {
+            fetched_inference_profiles: Vec::new(),
+            fetch_models_task: None,
+            last_fetch_models_error: None,
+            http_client: aws_http_client.clone(),
+            _subscription: cx.observe_global::<SettingsStore>(|this: &mut State, cx| {
+                // Region, endpoint and auth settings change which inference
+                // profiles exist, so refetch when authenticated.
+                if this.is_authenticated() {
+                    this.restart_fetch_models_task(cx);
+                }
                 cx.notify();
             }),
         });
 
         Self {
-            http_client: AwsHttpClient::new(http_client.clone()),
+            http_client: aws_http_client,
             plain_http_client: http_client,
             state,
             request_limiters: ModelRateLimiters::default(),
@@ -691,6 +790,34 @@ impl BedrockLanguageModelProvider {
                     thinking: thinking_from_settings(model.thinking.as_ref()),
                 },
             );
+        }
+
+        // Profiles fetched from the control plane that route to a built-in
+        // model only affect request-time routing, but profiles for unknown
+        // models are offered as custom models, so newly released AWS models
+        // show up without a Zed release. Settings entries take priority.
+        for profile in &self.state.read(cx).fetched_inference_profiles {
+            let routes_to_known_model = profile.model_ids.iter().any(|model_id| {
+                bedrock::ConverseModel::iter().any(|model| {
+                    !matches!(model, bedrock::ConverseModel::Custom { .. })
+                        && model.request_id() == model_id.as_str()
+                })
+            });
+            if !routes_to_known_model {
+                models.entry(profile.id.clone()).or_insert_with(|| {
+                    bedrock::ConverseModel::Custom {
+                        name: profile.id.clone(),
+                        display_name: Some(profile.name.clone()),
+                        max_tokens: FETCHED_PROFILE_MAX_TOKENS,
+                        max_output_tokens: None,
+                        default_temperature: None,
+                        cache_configuration: None,
+                        supports_tool_use: Some(true),
+                        supports_images: Some(false),
+                        thinking: None,
+                    }
+                });
+            }
         }
 
         let mut mantle_models = BTreeMap::default();
@@ -744,6 +871,64 @@ impl BedrockLanguageModelProvider {
     }
 }
 
+/// The inference profile id to route `request_id` through in `region`,
+/// preferring the profile for the region's geography, then `global.` when
+/// allowed, then any other fetched profile for the model.
+fn preferred_profile_id(
+    profiles: &[InferenceProfile],
+    request_id: &str,
+    region: &str,
+    allow_global: bool,
+) -> Option<String> {
+    let candidates: Vec<&str> = profiles
+        .iter()
+        .filter(|profile| {
+            profile
+                .model_ids
+                .iter()
+                .any(|model_id| model_id == request_id)
+        })
+        .map(|profile| profile.id.as_str())
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let geo_prefix = region_geo_prefix(region);
+    if !allow_global
+        && let Some(prefix) = geo_prefix
+        && let Some(id) = candidates.iter().find(|id| id.starts_with(prefix))
+    {
+        return Some((*id).to_string());
+    }
+    if allow_global && let Some(id) = candidates.iter().find(|id| id.starts_with("global.")) {
+        return Some((*id).to_string());
+    }
+    if let Some(prefix) = geo_prefix
+        && let Some(id) = candidates.iter().find(|id| id.starts_with(prefix))
+    {
+        return Some((*id).to_string());
+    }
+    candidates.first().map(|id| (*id).to_string())
+}
+
+/// The cross-region inference profile prefix for a region's geography, e.g.
+/// `us.` for `us-east-1`, `eu.` for `eu-west-1`, `apac.` for `ap-south-1`.
+fn region_geo_prefix(region: &str) -> Option<&'static str> {
+    if region.starts_with("us-") {
+        Some("us.")
+    } else if region.starts_with("eu-") {
+        Some("eu.")
+    } else if region.starts_with("ap-") {
+        Some("apac.")
+    } else if region.starts_with("ca-") {
+        Some("ca.")
+    } else if region.starts_with("sa-") {
+        Some("sa.")
+    } else {
+        None
+    }
+}
+
 fn language_model(config: &BedrockModelConfig) -> LanguageModel {
     match config {
         BedrockModelConfig::Converse(model) => converse_language_model(model),
@@ -789,6 +974,11 @@ impl LanguageModelProvider for BedrockLanguageModelProvider {
 
     fn authenticate(&self, cx: &mut App) -> Task<Result<(), AuthenticateError>> {
         self.state.update(cx, |state, cx| state.authenticate(cx))
+    }
+
+    fn refresh_models(&self, cx: &mut App) {
+        self.state
+            .update(cx, |state, cx| state.restart_fetch_models_task(cx));
     }
 
     fn settings_view(&self, _cx: &mut App) -> Option<ProviderSettingsView> {
@@ -859,60 +1049,7 @@ impl BedrockLanguageModelProvider {
     where
         ResolveFuture: Future<Output = Result<BedrockRequestAuth>> + Send + 'static,
     {
-        let (auth, region, auth_generation, cached_credentials) =
-            cx.read_entity(&self.state, |state, _cx| {
-                let (auth, region) = (state.auth.clone(), state.get_region());
-                let fresh_until = SystemTime::now() + CREDENTIALS_EXPIRY_MARGIN;
-                let cached_credentials = state
-                    .expiring_credentials
-                    .as_ref()
-                    .filter(|cached| {
-                        cached.auth == auth
-                            && cached.region == region
-                            && cached
-                                .credentials
-                                .expiry()
-                                .is_some_and(|expiry| expiry > fresh_until)
-                    })
-                    .map(|cached| cached.credentials.clone());
-                (auth, region, state.auth_generation, cached_credentials)
-            });
-        if !matches!(auth, Some(BedrockAuth::ApiKey { .. }))
-            && let Some(api_key) = environment_bearer_token(environment_variable)
-        {
-            return Task::ready(Ok(BedrockRequestAuth::ApiKey { api_key }));
-        }
-        if let Some(credentials) = cached_credentials {
-            return Task::ready(Ok(BedrockRequestAuth::SigV4 { credentials }));
-        }
-
-        let resolve_task = Tokio::spawn_result(cx, resolve(auth.clone(), region.clone()));
-        let timeout = cx.background_executor().timer(CREDENTIALS_LOAD_TIMEOUT);
-        let state = self.state.clone();
-        cx.spawn(async move |cx| {
-            // Dropping `resolve_task` on timeout cancels the Tokio task.
-            let request_auth = futures::select_biased! {
-                request_auth = resolve_task.fuse() => request_auth?,
-                _ = timeout.fuse() => anyhow::bail!(
-                    "timed out after {CREDENTIALS_LOAD_TIMEOUT:?} resolving AWS credentials"
-                ),
-            };
-            if let BedrockRequestAuth::SigV4 { credentials } = &request_auth
-                && credentials.expiry().is_some()
-            {
-                let credentials = credentials.clone();
-                state.update(cx, |state, _| {
-                    if state.auth_generation == auth_generation {
-                        state.expiring_credentials = Some(ExpiringCredentials {
-                            auth,
-                            region,
-                            credentials,
-                        });
-                    }
-                });
-            }
-            Ok(request_auth)
-        })
+        resolve_request_auth_with_state(&self.state, cx, environment_variable, resolve)
     }
 
     fn stream_bedrock_request(
@@ -949,15 +1086,16 @@ impl BedrockLanguageModelProvider {
     }
 }
 
-/// Builds a Converse client for one request from already-resolved auth. The
-/// profile still applies, since it can configure more than credentials.
-async fn build_converse_client(
+/// Builds the shared AWS SDK config for one request from already-resolved
+/// auth. The profile still applies, since it can configure more than
+/// credentials.
+async fn build_aws_config(
     http_client: AwsHttpClient,
     request_auth: BedrockRequestAuth,
     profile_name: Option<String>,
     endpoint: Option<String>,
     region: String,
-) -> BedrockClient {
+) -> aws_config::SdkConfig {
     let mut config_builder = aws_config::defaults(BehaviorVersion::latest())
         .stalled_stream_protection(StalledStreamProtectionConfig::disabled())
         .http_client(http_client)
@@ -973,7 +1111,7 @@ async fn build_converse_client(
         config_builder = config_builder.endpoint_url(endpoint_url);
     }
 
-    config_builder = match request_auth {
+    let config_builder = match request_auth {
         BedrockRequestAuth::SigV4 { credentials } => {
             config_builder.credentials_provider(credentials)
         }
@@ -982,7 +1120,34 @@ async fn build_converse_client(
             .token_provider(Token::new(api_key, None)),
     };
 
-    BedrockClient::new(&config_builder.load().await)
+    config_builder.load().await
+}
+
+/// Builds a Converse client for one request from already-resolved auth.
+async fn build_converse_client(
+    http_client: AwsHttpClient,
+    request_auth: BedrockRequestAuth,
+    profile_name: Option<String>,
+    endpoint: Option<String>,
+    region: String,
+) -> BedrockClient {
+    BedrockClient::new(
+        &build_aws_config(http_client, request_auth, profile_name, endpoint, region).await,
+    )
+}
+
+/// Builds a control-plane client (e.g. for `ListInferenceProfiles`) for one
+/// request from already-resolved auth.
+async fn build_control_plane_client(
+    http_client: AwsHttpClient,
+    request_auth: BedrockRequestAuth,
+    profile_name: Option<String>,
+    endpoint: Option<String>,
+    region: String,
+) -> BedrockControlClient {
+    BedrockControlClient::new(
+        &build_aws_config(http_client, request_auth, profile_name, endpoint, region).await,
+    )
 }
 
 fn converse_language_model(model: &ConverseModel) -> LanguageModel {
@@ -1079,17 +1244,27 @@ impl BedrockLanguageModelProvider {
             .boxed();
         }
 
-        let (region, allow_global, guardrail_identifier, guardrail_version) =
-            cx.read_entity(&self.state, |state, _cx| {
+        let (region, allow_global, guardrail_identifier, guardrail_version, profile_id) = cx
+            .read_entity(&self.state, |state, _cx| {
                 let (gid, gv) = state.get_guardrail_config();
-                (state.get_region(), state.get_allow_global(), gid, gv)
+                let region = state.get_region();
+                let allow_global = state.get_allow_global();
+                let profile_id =
+                    state.preferred_profile_id(config.request_id(), &region, allow_global);
+                (region, allow_global, gid, gv, profile_id)
             });
 
-        let model_id = match config.cross_region_inference_id(&region, allow_global) {
-            Ok(s) => s,
-            Err(e) => {
-                return async move { Err(e.into()) }.boxed();
-            }
+        // Route through the inference profile AWS actually offers in this
+        // region when the profile list was fetched; otherwise fall back to the
+        // built-in cross-region id table.
+        let model_id = match profile_id {
+            Some(profile_id) => profile_id,
+            None => match config.cross_region_inference_id(&region, allow_global) {
+                Ok(s) => s,
+                Err(e) => {
+                    return async move { Err(e.into()) }.boxed();
+                }
+            },
         };
 
         let deny_tool_calls = request.tool_choice == Some(LanguageModelToolChoice::None);
@@ -1273,6 +1448,74 @@ fn aws_profile_name(auth: &Option<BedrockAuth>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// [`BedrockLanguageModelProvider::resolve_request_auth`], but reading auth
+/// from `state`, so `State` itself can resolve auth (e.g. when fetching
+/// inference profiles).
+fn resolve_request_auth_with_state<ResolveFuture>(
+    state: &Entity<State>,
+    cx: &AsyncApp,
+    environment_variable: impl Fn(&str) -> Option<String>,
+    resolve: impl FnOnce(Option<BedrockAuth>, String) -> ResolveFuture,
+) -> Task<Result<BedrockRequestAuth>>
+where
+    ResolveFuture: Future<Output = Result<BedrockRequestAuth>> + Send + 'static,
+{
+    let (auth, region, auth_generation, cached_credentials) =
+        cx.read_entity(state, |state, _cx| {
+            let (auth, region) = (state.auth.clone(), state.get_region());
+            let fresh_until = SystemTime::now() + CREDENTIALS_EXPIRY_MARGIN;
+            let cached_credentials = state
+                .expiring_credentials
+                .as_ref()
+                .filter(|cached| {
+                    cached.auth == auth
+                        && cached.region == region
+                        && cached
+                            .credentials
+                            .expiry()
+                            .is_some_and(|expiry| expiry > fresh_until)
+                })
+                .map(|cached| cached.credentials.clone());
+            (auth, region, state.auth_generation, cached_credentials)
+        });
+    if !matches!(auth, Some(BedrockAuth::ApiKey { .. }))
+        && let Some(api_key) = environment_bearer_token(environment_variable)
+    {
+        return Task::ready(Ok(BedrockRequestAuth::ApiKey { api_key }));
+    }
+    if let Some(credentials) = cached_credentials {
+        return Task::ready(Ok(BedrockRequestAuth::SigV4 { credentials }));
+    }
+
+    let resolve_task = Tokio::spawn_result(cx, resolve(auth.clone(), region.clone()));
+    let timeout = cx.background_executor().timer(CREDENTIALS_LOAD_TIMEOUT);
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        // Dropping `resolve_task` on timeout cancels the Tokio task.
+        let request_auth = futures::select_biased! {
+            request_auth = resolve_task.fuse() => request_auth?,
+            _ = timeout.fuse() => anyhow::bail!(
+                "timed out after {CREDENTIALS_LOAD_TIMEOUT:?} resolving AWS credentials"
+            ),
+        };
+        if let BedrockRequestAuth::SigV4 { credentials } = &request_auth
+            && credentials.expiry().is_some()
+        {
+            let credentials = credentials.clone();
+            state.update(cx, |state, _| {
+                if state.auth_generation == auth_generation {
+                    state.expiring_credentials = Some(ExpiringCredentials {
+                        auth,
+                        region,
+                        credentials,
+                    });
+                }
+            });
+        }
+        Ok(request_auth)
+    })
 }
 
 /// Resolves provider settings into concrete request auth. A configured Bedrock
@@ -2917,6 +3160,7 @@ impl Render for ConfigurationView {
             .settings
             .as_ref()
             .and_then(|s| s.authentication_method.clone());
+        let last_fetch_models_error = state.last_fetch_models_error.clone();
 
         if self.load_credentials_task.is_some() {
             return div().child(Label::new("Loading credentials...")).into_any();
@@ -3033,6 +3277,12 @@ impl Render for ConfigurationView {
                     ),
             )
             .child(credentials_control)
+            .when_some(last_fetch_models_error, |this, error| {
+                this.child(
+                    Label::new(format!("Failed to fetch inference profiles from AWS: {error}"))
+                        .color(Color::Error),
+                )
+            })
             .into_any()
     }
 }
@@ -3218,6 +3468,105 @@ mod tests {
             config,
             BedrockModelConfig::Mantle(model) if model.display_name() == "Mantle Shared"
         ));
+    }
+
+    #[gpui::test]
+    fn fetched_inference_profiles_add_unknown_models(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let settings_store = SettingsStore::test(cx);
+            cx.set_global(settings_store);
+            gpui_tokio::init(cx);
+        });
+        let provider = cx.update(|cx| {
+            BedrockLanguageModelProvider::new(
+                http_client::FakeHttpClient::with_404_response(),
+                Arc::new(NoCredentialsProvider),
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            provider.state.update(cx, |state, _cx| {
+                state.fetched_inference_profiles = vec![
+                    InferenceProfile {
+                        id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+                        name: "US Claude Sonnet 4.5".to_string(),
+                        model_ids: vec!["anthropic.claude-sonnet-4-5-20250929-v1:0".to_string()],
+                    },
+                    InferenceProfile {
+                        id: "us.amazon.nova-3-v1:0".to_string(),
+                        name: "US Amazon Nova 3".to_string(),
+                        model_ids: vec!["amazon.nova-3-v1:0".to_string()],
+                    },
+                ];
+            });
+        });
+
+        let models = cx.update(|cx| provider.provided_models(cx));
+        // A profile routing to a built-in model adds no duplicate entry; the
+        // built-in id stays offered and routing happens at request time.
+        assert!(
+            models
+                .iter()
+                .any(|m| m.id.0.as_ref() == "claude-sonnet-4-5")
+        );
+        assert!(
+            !models
+                .iter()
+                .any(|m| m.id.0.as_ref() == "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        );
+        // A profile for an unknown model is offered under the profile id.
+        let nova = models
+            .iter()
+            .find(|m| m.id.0.as_ref() == "us.amazon.nova-3-v1:0")
+            .expect("profile for an unknown model should be offered");
+        assert_eq!(nova.name.0.as_ref(), "US Amazon Nova 3");
+        assert!(nova.supports_tools);
+
+        let config = cx
+            .update(|cx| provider.config(nova, cx))
+            .expect("the discovered model should resolve");
+        assert!(matches!(
+            config,
+            BedrockModelConfig::Converse(ConverseModel::Custom { .. })
+        ));
+    }
+
+    #[test]
+    fn preferred_profile_id_prefers_region_geography_then_global() {
+        let profiles = vec![
+            InferenceProfile {
+                id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+                name: "Global Claude Sonnet 4.5".to_string(),
+                model_ids: vec!["anthropic.claude-sonnet-4-5-20250929-v1:0".to_string()],
+            },
+            InferenceProfile {
+                id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+                name: "US Claude Sonnet 4.5".to_string(),
+                model_ids: vec!["anthropic.claude-sonnet-4-5-20250929-v1:0".to_string()],
+            },
+            InferenceProfile {
+                id: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0".to_string(),
+                name: "EU Claude Sonnet 4.5".to_string(),
+                model_ids: vec!["anthropic.claude-sonnet-4-5-20250929-v1:0".to_string()],
+            },
+        ];
+        let request_id = "anthropic.claude-sonnet-4-5-20250929-v1:0";
+        assert_eq!(
+            preferred_profile_id(&profiles, request_id, "us-east-1", false).as_deref(),
+            Some("us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        );
+        assert_eq!(
+            preferred_profile_id(&profiles, request_id, "eu-west-1", false).as_deref(),
+            Some("eu.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        );
+        assert_eq!(
+            preferred_profile_id(&profiles, request_id, "us-east-1", true).as_deref(),
+            Some("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+        );
+        assert_eq!(
+            preferred_profile_id(&profiles, "unknown.model", "us-east-1", true),
+            None
+        );
     }
 
     #[gpui::test]
