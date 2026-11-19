@@ -390,8 +390,18 @@ impl LanguageModelRegistry {
     }
 
     pub fn refresh_fallback_model(&mut self, cx: &mut Context<Self>) {
-        // If the fallback model was already set or we don't want to use it, do nothing
-        if !self.should_use_fallback || self.available_fallback_model.is_some() {
+        if !self.should_use_fallback {
+            return;
+        }
+        if let Some(current) = &self.available_fallback_model
+            && let Some(provider) = self.providers.get(&current.provider_id)
+            && provider.is_authenticated(cx)
+            && let Some(offered) = provider
+                .provided_models(cx)
+                .into_iter()
+                .find(|model| model.id == current.id)
+        {
+            self.available_fallback_model = Some(offered);
             return;
         }
 
@@ -645,6 +655,30 @@ mod tests {
         assert!(SelectedModel::from_str("custom-provider").is_err());
         assert!(SelectedModel::from_str("/organization/model-name").is_err());
         assert!(SelectedModel::from_str("custom-provider/").is_err());
+    }
+
+    #[gpui::test]
+    fn fallback_follows_changes_to_offered_models(cx: &mut App) {
+        let provider = Arc::new(FakeLanguageModelProvider::default());
+        let registry = cx.new(|cx| {
+            let mut registry = LanguageModelRegistry::default();
+            registry.register_provider(provider.clone(), cx);
+            registry.set_should_use_fallback(true);
+            registry.refresh_fallback_model(cx);
+            registry
+        });
+        assert_eq!(
+            registry.read(cx).default_model().map(|model| model.id),
+            Some(provider.model("fake").id)
+        );
+        let replacement = provider.update_model("fake", |model| {
+            model.id = LanguageModelId("replacement".into())
+        });
+        registry.update(cx, |registry, cx| registry.refresh_fallback_model(cx));
+        assert_eq!(
+            registry.read(cx).default_model().map(|model| model.id),
+            Some(replacement.id)
+        );
     }
 
     #[gpui::test]
